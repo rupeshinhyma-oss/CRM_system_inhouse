@@ -1,0 +1,357 @@
+// Target relational shape for Phase 3 (Postgres migration).
+// Every lowdb collection in src/db/db.js maps 1:1 to a model below —
+// migration is: dump JSON collection -> INSERT into matching table.
+// Not wired up yet (no `prisma` package in this offline build environment).
+// To activate: `npm install prisma @prisma/client`, drop this file in as
+// `prisma/schema.prisma`, point DATABASE_URL at Postgres, `prisma migrate dev`,
+// then swap src/db/db.js's lowdb calls for `prisma.<model>.<method>()` calls
+// (the repository layer already isolates this — only src/db/db.js and the
+// service files that call `db.get(...)` need to change).
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Organization {
+  id                String    @id @default(uuid())
+  name              String
+  logoUrl           String?
+  address           String?
+  country           String?
+  timezone          String    @default("UTC")
+  industry          String?
+  phone             String?
+  email             String
+  subscriptionPlan  String    @default("FREE")
+  storageUsedMb     Int       @default(0)
+  storageQuotaMb    Int       @default(1024)
+  status            String    @default("ACTIVE") // ACTIVE | SUSPENDED | DELETED
+  settings          Json      @default("{}")
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  deletedAt         DateTime?
+
+  users             User[]
+  roles             Role[]
+  departments       Department[]
+  contacts          Contact[]
+  companies         Company[]
+  leads             Lead[]
+  deals             Deal[]
+  groups            Group[]
+  auditLogs         AuditLog[]
+  notifications     Notification[]
+
+  @@index([status])
+}
+
+model User {
+  id                String    @id @default(uuid())
+  organization      Organization? @relation(fields: [orgId], references: [id])
+  orgId             String?   // null only for the single Super Admin
+  email             String    @unique
+  passwordHash      String
+  displayName       String
+  avatarUrl         String?
+  designation       String?
+  phone             String?
+  departmentId      String?
+  managerId         String?
+  employeeId        String?
+  timezone          String    @default("UTC")
+  language          String    @default("en")
+  isSuperAdmin      Boolean   @default(false)
+  roleId            String?
+  role              Role?     @relation(fields: [roleId], references: [id])
+  status            String    @default("OFFLINE")
+  enabled           Boolean   @default(true)
+  lastLoginAt       DateTime?
+  lastSeenAt        DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  refreshTokens         RefreshToken[]
+  permissionOverrides   UserPermissionOverride[]
+
+  @@index([orgId])
+  @@index([email])
+}
+
+model Role {
+  id              String   @id @default(uuid())
+  organization    Organization? @relation(fields: [orgId], references: [id])
+  orgId           String?  // null for platform-level roles, if ever needed
+  key             String
+  label           String
+  systemProtected Boolean  @default(false)
+  createdAt       DateTime @default(now())
+
+  users             User[]
+  rolePermissions   RolePermission[]
+
+  @@unique([orgId, key])
+}
+
+model RolePermission {
+  id         String @id @default(uuid())
+  role       Role   @relation(fields: [roleId], references: [id])
+  roleId     String
+  permission String
+
+  @@unique([roleId, permission])
+}
+
+model UserPermissionOverride {
+  id         String   @id @default(uuid())
+  user       User     @relation(fields: [userId], references: [id])
+  userId     String
+  permission String
+  effect     String   // GRANT | REVOKE
+  createdBy  String
+  createdAt  DateTime @default(now())
+
+  @@unique([userId, permission])
+}
+
+model RefreshToken {
+  id         String   @id @default(uuid())
+  user       User     @relation(fields: [userId], references: [id])
+  userId     String
+  tokenHash  String   @unique
+  revoked    Boolean  @default(false)
+  expiresAt  DateTime
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+}
+
+model Department {
+  id          String @id @default(uuid())
+  organization Organization @relation(fields: [orgId], references: [id])
+  orgId       String
+  name        String
+  description String?
+  createdAt   DateTime @default(now())
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  organization Organization? @relation(fields: [orgId], references: [id])
+  orgId      String?
+  userId     String?
+  action     String
+  entityType String
+  entityId   String?
+  oldValue   Json?
+  newValue   Json?
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  @@index([orgId, entityType])
+  @@index([createdAt])
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  organization Organization? @relation(fields: [orgId], references: [id])
+  orgId     String?
+  userId    String
+  type      String
+  title     String
+  body      String?
+  read      Boolean  @default(false)
+  channel   String   @default("IN_APP")
+  createdAt DateTime @default(now())
+
+  @@index([userId, read])
+}
+
+model SharedOrganization {
+  id         String   @id @default(uuid())
+  orgAId     String
+  orgBId     String
+  status     String   @default("ENABLED")
+  enabledBy  String
+  createdAt  DateTime @default(now())
+
+  grants     SharedResourceGrant[]
+}
+
+model SharedResourceGrant {
+  id              String   @id @default(uuid())
+  link            SharedOrganization @relation(fields: [sharedOrgLinkId], references: [id])
+  sharedOrgLinkId String
+  resourceType    String
+  resourceId      String
+  permission      String
+  grantedBy       String
+  grantedByOrgId  String
+  createdAt       DateTime @default(now())
+}
+
+// --- CRM ---
+
+model Contact {
+  id            String   @id @default(uuid())
+  organization  Organization @relation(fields: [orgId], references: [id])
+  orgId         String
+  name          String
+  email         String?
+  phone         String?
+  designation   String?
+  companyId     String?
+  address       String?
+  country       String?
+  state         String?
+  city          String?
+  tags          String[]
+  notes         String?
+  assignedUserId String?
+  createdBy     String
+  updatedBy     String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  deletedAt     DateTime?
+
+  @@index([orgId])
+}
+
+model Company {
+  id            String   @id @default(uuid())
+  organization  Organization @relation(fields: [orgId], references: [id])
+  orgId         String
+  name          String
+  industry      String?
+  website       String?
+  gst           String?
+  address       String?
+  employeeCount Int?
+  revenue       Float?
+  tags          String[]
+  notes         String?
+  assignedUserId String?
+  createdBy     String
+  updatedBy     String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  deletedAt     DateTime?
+
+  @@index([orgId])
+}
+
+model Lead {
+  id                  String   @id @default(uuid())
+  organization        Organization @relation(fields: [orgId], references: [id])
+  orgId               String
+  name                String
+  email               String?
+  phone               String?
+  source              String?
+  status              String   @default("NEW")
+  score               Int      @default(0)
+  interestedProducts  String[]
+  priority            String   @default("MEDIUM")
+  assignedUserId      String?
+  conversionHistory   Json     @default("[]")
+  tags                String[]
+  notes               String?
+  createdBy           String
+  updatedBy           String
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  deletedAt           DateTime?
+
+  @@index([orgId, status])
+}
+
+model Deal {
+  id               String   @id @default(uuid())
+  organization     Organization @relation(fields: [orgId], references: [id])
+  orgId            String
+  name             String
+  pipeline         String   @default("DEFAULT")
+  stage            String   @default("NEW")
+  amount           Float    @default(0)
+  currency         String   @default("USD")
+  probability      Int      @default(10)
+  expectedCloseDate DateTime?
+  closedAt         DateTime?
+  assignedUserId   String?
+  contactId        String?
+  companyId        String?
+  productIds       String[]
+  tags             String[]
+  notes            String?
+  createdBy        String
+  updatedBy        String
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  deletedAt        DateTime?
+
+  @@index([orgId, stage])
+}
+
+// --- Chat ---
+
+model Group {
+  id           String   @id @default(uuid())
+  organization Organization @relation(fields: [orgId], references: [id])
+  orgId        String
+  name         String
+  description  String?
+  avatarUrl    String?
+  kind         String   @default("GROUP") // GROUP | DEPARTMENT | ANNOUNCEMENT
+  departmentId String?
+  createdBy    String
+  archived     Boolean  @default(false)
+  createdAt    DateTime @default(now())
+}
+
+model GroupMember {
+  id       String   @id @default(uuid())
+  groupId  String
+  userId   String
+  role     String   @default("MEMBER")
+  muted    Boolean  @default(false)
+  pinned   Boolean  @default(false)
+  joinedAt DateTime @default(now())
+
+  @@unique([groupId, userId])
+}
+
+model Conversation {
+  id             String   @id @default(uuid())
+  orgId          String?
+  type           String   // DIRECT | GROUP
+  groupId        String?
+  userAId        String?
+  userBId        String?
+  crossOrgLinkId String?
+  lastMessageAt  DateTime?
+  createdAt      DateTime @default(now())
+}
+
+model Message {
+  id               String    @id @default(uuid())
+  conversationId   String
+  senderId         String
+  content          String
+  replyToId        String?
+  forwardedFromId  String?
+  status           String    @default("SENT")
+  edited           Boolean   @default(false)
+  deleted          Boolean   @default(false)
+  pinned           Boolean   @default(false)
+  starredBy        String[]
+  reactions        Json      @default("[]")
+  createdAt        DateTime  @default(now())
+  editedAt         DateTime?
+
+  @@index([conversationId, createdAt])
+}
