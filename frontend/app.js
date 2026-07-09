@@ -1,10 +1,13 @@
 // ===================================================================
-// Relay frontend — talks to /api/v1/* on the SAME origin this file is
-// served from (works unchanged on localhost and on Railway/AWS, since
-// backend/src/server.js serves this frontend statically from itself).
+// Relay frontend — API_ORIGIN below points at wherever the backend is
+// hosted. Leave it as '' if frontend+backend are served by the SAME app
+// (e.g. Express serving both, as in backend/src/server.js). Set it to the
+// backend's full URL if they're deployed as two separate services (e.g.
+// two separate Render services, or Netlify/Vercel frontend + Render API).
 // ===================================================================
 
-const API_BASE = '/api/v1';
+const API_ORIGIN = 'https://crm-system-inhouse-backend.onrender.com';
+const API_BASE = API_ORIGIN + '/api/v1';
 
 const state = {
   accessToken: localStorage.getItem('relay_access_token') || null,
@@ -68,10 +71,33 @@ function clearTokens() {
   localStorage.removeItem('relay_refresh_token');
 }
 
-// ------------------------- Auth screen -------------------------
+// ------------------------- Screens -------------------------
 
+const setupScreen = document.getElementById('setupScreen');
 const authScreen = document.getElementById('authScreen');
 const appShell = document.getElementById('appShell');
+
+function showScreen(name) {
+  setupScreen.classList.toggle('hidden', name !== 'setup');
+  authScreen.classList.toggle('hidden', name !== 'auth');
+  appShell.classList.toggle('hidden', name !== 'app');
+}
+
+document.getElementById('setupForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const errEl = document.getElementById('setupError');
+  errEl.textContent = '';
+  try {
+    const displayName = document.getElementById('setupDisplayName').value.trim();
+    const email = document.getElementById('setupEmail').value.trim();
+    const password = document.getElementById('setupPassword').value;
+    const { data } = await api('/setup/super-admin', { method: 'POST', body: { displayName, email, password } });
+    setTokens(data.accessToken, data.refreshToken);
+    await enterApp();
+  } catch (err) {
+    errEl.textContent = err.message;
+  }
+});
 
 document.querySelectorAll('.tab-btn').forEach((btn) => {
   btn.addEventListener('click', () => {
@@ -131,8 +157,7 @@ async function enterApp() {
   const { data: me } = await api('/auth/me');
   state.me = me;
 
-  authScreen.classList.add('hidden');
-  appShell.classList.remove('hidden');
+  showScreen('app');
 
   document.getElementById('meName').textContent = me.displayName;
   document.getElementById('meEmail').textContent = me.email;
@@ -164,7 +189,7 @@ function setActiveView(view) {
 // ------------------------- Realtime (Socket.IO) -------------------------
 
 function connectSocket() {
-  state.socket = io(window.location.origin, { auth: { token: state.accessToken } });
+  state.socket = io(API_ORIGIN || window.location.origin, { auth: { token: state.accessToken } });
 
   state.socket.on('chat:message', (message) => {
     if (message.conversationId === state.activeConversationId) {
@@ -366,9 +391,14 @@ function escapeHtml(str) {
       await enterApp();
       return;
     } catch {
-      clearTokens(); // stale/expired tokens with no valid refresh — fall through to login screen
+      clearTokens(); // stale/expired tokens with no valid refresh — fall through below
     }
   }
-  authScreen.classList.remove('hidden');
-  appShell.classList.add('hidden');
+
+  try {
+    const { data } = await api('/setup/status');
+    showScreen(data.superAdminExists ? 'auth' : 'setup');
+  } catch {
+    showScreen('auth'); // if the status check itself fails, default to the normal login screen
+  }
 })();
