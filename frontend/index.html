@@ -8,8 +8,30 @@
 </head>
 <body>
 
+  <!-- ===================== SYSTEM SETUP (shown only until a Super Admin is created — then gone forever) ===================== -->
+  <div id="setupScreen" class="auth-screen hidden">
+    <div class="auth-card">
+      <h1 class="brand">Relay</h1>
+      <p class="brand-sub">First-time system setup</p>
+      <p style="font-size:13px;color:#b7bfcc;line-height:1.5;">
+        No Super Admin account exists yet. Create it now — this is a one-time
+        step and this screen will never appear again once it's done.
+      </p>
+      <form id="setupForm" class="auth-form">
+        <label>Your name</label>
+        <input type="text" id="setupDisplayName" required placeholder="Jane Doe" />
+        <label>Super Admin email</label>
+        <input type="email" id="setupEmail" required placeholder="you@company.com" />
+        <label>Password</label>
+        <input type="password" id="setupPassword" required minlength="8" placeholder="min 8 characters" />
+        <button type="submit" class="primary-btn">Create Super Admin account</button>
+        <p class="error-msg" id="setupError"></p>
+      </form>
+    </div>
+  </div>
+
   <!-- ===================== AUTH SCREEN ===================== -->
-  <div id="authScreen" class="auth-screen">
+  <div id="authScreen" class="auth-screen hidden">
     <div class="auth-card">
       <h1 class="brand">Relay</h1>
       <p class="brand-sub">Enterprise CRM + Chat</p>
