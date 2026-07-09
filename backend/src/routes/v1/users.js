@@ -2,7 +2,8 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
-const { db, nowIso } = require('../../db/db');
+const repo = require('../../db');
+const { nowIso } = require('../../utils/time');
 const { requireAuth, requirePermission, belongsToSameOrg } = require('../../middleware/authGuards');
 const { recordAudit } = require('../../middleware/auditLog');
 const { ok, created, fail, paginate } = require('../../utils/respond');
@@ -15,10 +16,9 @@ function publicUser(u) {
   return safe;
 }
 
-// GET /api/v1/users?search=&department=&status=&page=&pageSize=
-router.get('/', requireAuth, requirePermission('user.view'), (req, res) => {
+router.get('/', requireAuth, requirePermission('user.view'), async (req, res) => {
   const { search, departmentId, status, page, pageSize } = req.query;
-  let users = db.get('users').filter({ orgId: req.user.orgId }).value();
+  let users = await repo.list('users', { orgId: req.user.orgId });
 
   if (search) {
     const q = search.toLowerCase();
@@ -31,22 +31,20 @@ router.get('/', requireAuth, requirePermission('user.view'), (req, res) => {
   ok(res, items.map(publicUser), meta);
 });
 
-// POST /api/v1/users/invite  { email, displayName, roleId, departmentId? }
-// Creates a user with a random temporary password (production: send an email invite/reset link instead).
-router.post('/invite', requireAuth, requirePermission('user.create'), (req, res) => {
+router.post('/invite', requireAuth, requirePermission('user.create'), async (req, res) => {
   const { email, displayName, roleId, departmentId } = req.body || {};
   if (!email || !displayName || !roleId) return fail(res, 400, 'email, displayName and roleId are required');
 
   const emailLower = email.toLowerCase().trim();
-  if (db.get('users').find({ email: emailLower }).value()) return fail(res, 409, 'An account with this email already exists');
+  if (await repo.findOne('users', { email: emailLower })) return fail(res, 409, 'An account with this email already exists');
 
-  const role = db.get('roles').find({ id: roleId, orgId: req.user.orgId }).value();
-  if (!role) return fail(res, 400, 'roleId does not belong to your organization');
+  const role = await repo.findById('roles', roleId);
+  if (!role || role.orgId !== req.user.orgId) return fail(res, 400, 'roleId does not belong to your organization');
 
   const tempPassword = crypto.randomBytes(9).toString('base64url');
-  const employeeCount = db.get('users').filter({ orgId: req.user.orgId }).size().value();
+  const employeeCount = await repo.count('users', { orgId: req.user.orgId });
 
-  const user = {
+  const user = await repo.insert('users', {
     id: uuidv4(),
     orgId: req.user.orgId,
     email: emailLower,
@@ -67,34 +65,30 @@ router.post('/invite', requireAuth, requirePermission('user.create'), (req, res)
     lastLoginAt: null,
     createdAt: nowIso(),
     updatedAt: nowIso(),
-  };
-  db.get('users').push(user).write();
+  });
 
-  recordAudit(req, { action: 'user.invite', entityType: 'user', entityId: user.id, newValue: publicUser(user) });
+  await recordAudit(req, { action: 'user.invite', entityType: 'user', entityId: user.id, newValue: publicUser(user) });
   // Production: email `tempPassword` via a secure invite link instead of returning it in the API response.
   created(res, { user: publicUser(user), temporaryPassword: tempPassword });
 });
 
-// GET /api/v1/users/:id
-router.get('/:id', requireAuth, requirePermission('user.view'), (req, res) => {
-  const user = db.get('users').find({ id: req.params.id }).value();
+router.get('/:id', requireAuth, requirePermission('user.view'), async (req, res) => {
+  const user = await repo.findById('users', req.params.id);
   if (!user || !belongsToSameOrg(req, user.orgId)) return fail(res, 404, 'User not found');
   ok(res, publicUser(user));
 });
 
-// PATCH /api/v1/users/me/profile — edit own profile, no permission required beyond auth
-router.patch('/me/profile', requireAuth, (req, res) => {
+router.patch('/me/profile', requireAuth, async (req, res) => {
   const allowed = ['displayName', 'avatarUrl', 'designation', 'phone', 'timezone', 'language'];
   const updates = {};
   for (const key of allowed) if (key in req.body) updates[key] = req.body[key];
   updates.updatedAt = nowIso();
-  const updated = db.get('users').find({ id: req.user.uid }).assign(updates).write();
+  const updated = await repo.updateById('users', req.user.uid, updates);
   ok(res, publicUser(updated));
 });
 
-// PATCH /api/v1/users/:id — admin edits a user (role, department, manager, etc.)
-router.patch('/:id', requireAuth, requirePermission('user.edit'), (req, res) => {
-  const user = db.get('users').find({ id: req.params.id }).value();
+router.patch('/:id', requireAuth, requirePermission('user.edit'), async (req, res) => {
+  const user = await repo.findById('users', req.params.id);
   if (!user || !belongsToSameOrg(req, user.orgId)) return fail(res, 404, 'User not found');
 
   const allowed = ['displayName', 'designation', 'phone', 'departmentId', 'managerId', 'roleId', 'timezone', 'language'];
@@ -103,52 +97,47 @@ router.patch('/:id', requireAuth, requirePermission('user.edit'), (req, res) => 
   updates.updatedAt = nowIso();
 
   const oldValue = publicUser(user);
-  const updated = db.get('users').find({ id: user.id }).assign(updates).write();
-  recordAudit(req, { action: 'user.update', entityType: 'user', entityId: user.id, oldValue, newValue: publicUser(updated) });
+  const updated = await repo.updateById('users', user.id, updates);
+  await recordAudit(req, { action: 'user.update', entityType: 'user', entityId: user.id, oldValue, newValue: publicUser(updated) });
   ok(res, publicUser(updated));
 });
 
-// POST /api/v1/users/:id/disable | /enable | /suspend
 for (const [path, enabled] of [['disable', false], ['enable', true]]) {
-  router.post(`/:id/${path}`, requireAuth, requirePermission('user.disable'), (req, res) => {
-    const user = db.get('users').find({ id: req.params.id }).value();
+  router.post(`/:id/${path}`, requireAuth, requirePermission('user.disable'), async (req, res) => {
+    const user = await repo.findById('users', req.params.id);
     if (!user || !belongsToSameOrg(req, user.orgId)) return fail(res, 404, 'User not found');
-    const updated = db.get('users').find({ id: user.id }).assign({ enabled, updatedAt: nowIso() }).write();
-    recordAudit(req, { action: `user.${path}`, entityType: 'user', entityId: user.id });
+    const updated = await repo.updateById('users', user.id, { enabled, updatedAt: nowIso() });
+    await recordAudit(req, { action: `user.${path}`, entityType: 'user', entityId: user.id });
     ok(res, publicUser(updated));
   });
 }
 
-// DELETE /api/v1/users/:id
-router.delete('/:id', requireAuth, requirePermission('user.delete'), (req, res) => {
-  const user = db.get('users').find({ id: req.params.id }).value();
+router.delete('/:id', requireAuth, requirePermission('user.delete'), async (req, res) => {
+  const user = await repo.findById('users', req.params.id);
   if (!user || !belongsToSameOrg(req, user.orgId)) return fail(res, 404, 'User not found');
-  db.get('users').remove({ id: user.id }).write();
-  recordAudit(req, { action: 'user.delete', entityType: 'user', entityId: user.id });
+  await repo.removeById('users', user.id);
+  await recordAudit(req, { action: 'user.delete', entityType: 'user', entityId: user.id });
   res.status(204).send();
 });
 
-// GET /api/v1/users/:id/permissions — effective permissions (role + overrides)
-router.get('/:id/permissions', requireAuth, requirePermission('user.permissions'), (req, res) => {
-  const user = db.get('users').find({ id: req.params.id }).value();
+router.get('/:id/permissions', requireAuth, requirePermission('user.permissions'), async (req, res) => {
+  const user = await repo.findById('users', req.params.id);
   if (!user || !belongsToSameOrg(req, user.orgId)) return fail(res, 404, 'User not found');
-  const rolePerms = user.roleId ? db.get('rolePermissions').filter({ roleId: user.roleId }).map('permission').value() : [];
-  const overrides = db.get('userPermissionOverrides').filter({ userId: user.id }).value();
+  const rolePerms = user.roleId ? (await repo.list('rolePermissions', { roleId: user.roleId })).map((r) => r.permission) : [];
+  const overrides = await repo.list('userPermissionOverrides', { userId: user.id });
   ok(res, { rolePermissions: rolePerms, overrides });
 });
 
-// POST /api/v1/users/:id/permissions  { permission, effect: 'GRANT'|'REVOKE' }
-router.post('/:id/permissions', requireAuth, requirePermission('user.permissions'), (req, res) => {
+router.post('/:id/permissions', requireAuth, requirePermission('user.permissions'), async (req, res) => {
   const { permission, effect } = req.body || {};
   if (!permission || !['GRANT', 'REVOKE'].includes(effect)) return fail(res, 400, 'permission and effect (GRANT|REVOKE) are required');
-  const user = db.get('users').find({ id: req.params.id }).value();
+  const user = await repo.findById('users', req.params.id);
   if (!user || !belongsToSameOrg(req, user.orgId)) return fail(res, 404, 'User not found');
 
-  db.get('userPermissionOverrides').remove({ userId: user.id, permission }).write();
-  const override = { id: uuidv4(), userId: user.id, permission, effect, createdAt: nowIso(), createdBy: req.user.uid };
-  db.get('userPermissionOverrides').push(override).write();
+  await repo.removeWhere('userPermissionOverrides', { userId: user.id, permission });
+  const override = await repo.insert('userPermissionOverrides', { id: uuidv4(), userId: user.id, permission, effect, createdAt: nowIso(), createdBy: req.user.uid });
 
-  recordAudit(req, { action: 'user.permission_override', entityType: 'user', entityId: user.id, newValue: override });
+  await recordAudit(req, { action: 'user.permission_override', entityType: 'user', entityId: user.id, newValue: override });
   created(res, override);
 });
 
