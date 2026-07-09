@@ -1,12 +1,13 @@
 const { v4: uuidv4 } = require('uuid');
-const { db, nowIso } = require('../db/db');
+const repo = require('../db');
+const { nowIso } = require('../utils/time');
 
 /**
  * Call this directly from a controller/service right after a mutation:
- *   recordAudit(req, { action: 'lead.create', entityType: 'lead', entityId: lead.id, newValue: lead });
+ *   await recordAudit(req, { action: 'lead.create', entityType: 'lead', entityId: lead.id, newValue: lead });
  */
-function recordAudit(req, { action, entityType, entityId, oldValue = null, newValue = null }) {
-  db.get('auditLogs').push({
+async function recordAudit(req, { action, entityType, entityId, oldValue = null, newValue = null }) {
+  await repo.insert('auditLogs', {
     id: uuidv4(),
     orgId: req.user?.orgId || null,
     userId: req.user?.uid || null,
@@ -18,7 +19,7 @@ function recordAudit(req, { action, entityType, entityId, oldValue = null, newVa
     ip: req.ip,
     userAgent: req.headers['user-agent'] || null,
     createdAt: nowIso(),
-  }).write();
+  });
 }
 
 module.exports = { recordAudit };
