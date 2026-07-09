@@ -1,6 +1,7 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
-const { db, nowIso } = require('../../db/db');
+const repo = require('../../db');
+const { nowIso } = require('../../utils/time');
 const { isValidPermission } = require('../../permissions/catalog');
 const { requireAuth, requirePermission, belongsToSameOrg } = require('../../middleware/authGuards');
 const { recordAudit } = require('../../middleware/auditLog');
@@ -8,21 +9,19 @@ const { ok, created, fail, noContent } = require('../../utils/respond');
 
 const router = express.Router();
 
-function roleWithPermissions(role) {
-  const permissions = db.get('rolePermissions').filter({ roleId: role.id }).map('permission').value();
-  return { ...role, permissions };
+async function roleWithPermissions(role) {
+  const rows = await repo.list('rolePermissions', { roleId: role.id });
+  return { ...role, permissions: rows.map((r) => r.permission) };
 }
 
-// GET /api/v1/roles — all roles for the caller's org (or ?orgId= for Super Admin)
-router.get('/', requireAuth, (req, res) => {
+router.get('/', requireAuth, async (req, res) => {
   const orgId = req.user.isSuperAdmin ? (req.query.orgId || null) : req.user.orgId;
   if (!orgId) return fail(res, 400, 'orgId is required');
-  const roles = db.get('roles').filter({ orgId }).value().map(roleWithPermissions);
-  ok(res, roles);
+  const roles = await repo.list('roles', { orgId });
+  ok(res, await Promise.all(roles.map(roleWithPermissions)));
 });
 
-// POST /api/v1/roles  { orgId?, key, label, permissions: [] } — create a custom role
-router.post('/', requireAuth, requirePermission('admin.roles'), (req, res) => {
+router.post('/', requireAuth, requirePermission('admin.roles'), async (req, res) => {
   const orgId = req.user.isSuperAdmin ? req.body.orgId : req.user.orgId;
   const { key, label, permissions = [] } = req.body || {};
   if (!orgId || !key || !label) return fail(res, 400, 'orgId, key and label are required');
@@ -30,51 +29,52 @@ router.post('/', requireAuth, requirePermission('admin.roles'), (req, res) => {
   const invalid = permissions.filter((p) => !isValidPermission(p));
   if (invalid.length) return fail(res, 400, 'Unknown permission(s)', invalid);
 
-  const role = { id: uuidv4(), orgId, key, label, systemProtected: false, createdAt: nowIso() };
-  db.get('roles').push(role).write();
-  permissions.forEach((permission) => db.get('rolePermissions').push({ id: uuidv4(), roleId: role.id, permission }).write());
+  const role = await repo.insert('roles', { id: uuidv4(), orgId, key, label, systemProtected: false, createdAt: nowIso() });
+  for (const permission of permissions) {
+    await repo.insert('rolePermissions', { id: uuidv4(), roleId: role.id, permission });
+  }
 
-  recordAudit(req, { action: 'role.create', entityType: 'role', entityId: role.id, newValue: { ...role, permissions } });
-  created(res, roleWithPermissions(role));
+  await recordAudit(req, { action: 'role.create', entityType: 'role', entityId: role.id, newValue: { ...role, permissions } });
+  created(res, await roleWithPermissions(role));
 });
 
-// PATCH /api/v1/roles/:id  { label?, permissions? } — edit a custom role's permission bundle
-router.patch('/:id', requireAuth, requirePermission('admin.roles'), (req, res) => {
-  const role = db.get('roles').find({ id: req.params.id }).value();
+router.patch('/:id', requireAuth, requirePermission('admin.roles'), async (req, res) => {
+  const role = await repo.findById('roles', req.params.id);
   if (!role) return fail(res, 404, 'Role not found');
   if (!belongsToSameOrg(req, role.orgId)) return fail(res, 403, 'Not authorized to edit this role');
   if (role.systemProtected && 'permissions' in req.body) {
     return fail(res, 400, 'This is a system-protected role and its base permissions cannot be edited. Clone it into a custom role instead.');
   }
 
-  const oldValue = roleWithPermissions(role);
-  if ('label' in req.body) db.get('roles').find({ id: role.id }).assign({ label: req.body.label }).write();
+  const oldValue = await roleWithPermissions(role);
+  if ('label' in req.body) await repo.updateById('roles', role.id, { label: req.body.label });
 
   if (Array.isArray(req.body.permissions)) {
     const invalid = req.body.permissions.filter((p) => !isValidPermission(p));
     if (invalid.length) return fail(res, 400, 'Unknown permission(s)', invalid);
-    db.get('rolePermissions').remove({ roleId: role.id }).write();
-    req.body.permissions.forEach((permission) => db.get('rolePermissions').push({ id: uuidv4(), roleId: role.id, permission }).write());
+    await repo.removeWhere('rolePermissions', { roleId: role.id });
+    for (const permission of req.body.permissions) {
+      await repo.insert('rolePermissions', { id: uuidv4(), roleId: role.id, permission });
+    }
   }
 
-  const updated = roleWithPermissions(db.get('roles').find({ id: role.id }).value());
-  recordAudit(req, { action: 'role.update', entityType: 'role', entityId: role.id, oldValue, newValue: updated });
+  const updated = await roleWithPermissions(await repo.findById('roles', role.id));
+  await recordAudit(req, { action: 'role.update', entityType: 'role', entityId: role.id, oldValue, newValue: updated });
   ok(res, updated);
 });
 
-// DELETE /api/v1/roles/:id — cannot delete system-protected roles (e.g. Organization Owner)
-router.delete('/:id', requireAuth, requirePermission('admin.roles'), (req, res) => {
-  const role = db.get('roles').find({ id: req.params.id }).value();
+router.delete('/:id', requireAuth, requirePermission('admin.roles'), async (req, res) => {
+  const role = await repo.findById('roles', req.params.id);
   if (!role) return fail(res, 404, 'Role not found');
   if (!belongsToSameOrg(req, role.orgId)) return fail(res, 403, 'Not authorized to delete this role');
   if (role.systemProtected) return fail(res, 400, 'System-protected roles cannot be deleted');
 
-  const usersWithRole = db.get('users').filter({ roleId: role.id }).size().value();
+  const usersWithRole = await repo.count('users', { roleId: role.id });
   if (usersWithRole > 0) return fail(res, 400, `Cannot delete a role assigned to ${usersWithRole} user(s). Reassign them first.`);
 
-  db.get('rolePermissions').remove({ roleId: role.id }).write();
-  db.get('roles').remove({ id: role.id }).write();
-  recordAudit(req, { action: 'role.delete', entityType: 'role', entityId: role.id });
+  await repo.removeWhere('rolePermissions', { roleId: role.id });
+  await repo.removeById('roles', role.id);
+  await recordAudit(req, { action: 'role.delete', entityType: 'role', entityId: role.id });
   noContent(res);
 });
 
