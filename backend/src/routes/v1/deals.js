@@ -1,5 +1,6 @@
 const { createCrmRouter } = require('../../services/crmRouterFactory');
-const { db, nowIso } = require('../../db/db');
+const repo = require('../../db');
+const { nowIso } = require('../../utils/time');
 const { requireAuth, requirePermission, belongsToSameOrg } = require('../../middleware/authGuards');
 const { recordAudit } = require('../../middleware/auditLog');
 const { ok, fail } = require('../../utils/respond');
@@ -16,15 +17,14 @@ const router = createCrmRouter({
 });
 
 // POST /api/v1/deals/:id/close  { outcome: 'WON'|'LOST' } — requires deal.close
-router.post('/:id/close', requireAuth, requirePermission('deal.close'), (req, res) => {
+router.post('/:id/close', requireAuth, requirePermission('deal.close'), async (req, res) => {
   const { outcome } = req.body || {};
   if (!['WON', 'LOST'].includes(outcome)) return fail(res, 400, 'outcome must be WON or LOST');
-  const deal = db.get('deals').find({ id: req.params.id }).value();
+  const deal = await repo.findById('deals', req.params.id);
   if (!deal || !belongsToSameOrg(req, deal.orgId)) return fail(res, 404, 'Deal not found');
 
-  const updated = db.get('deals').find({ id: deal.id })
-    .assign({ stage: outcome, closedAt: nowIso(), probability: outcome === 'WON' ? 100 : 0 }).write();
-  recordAudit(req, { action: 'deal.close', entityType: 'deal', entityId: deal.id, newValue: { outcome } });
+  const updated = await repo.updateById('deals', deal.id, { stage: outcome, closedAt: nowIso(), probability: outcome === 'WON' ? 100 : 0 });
+  await recordAudit(req, { action: 'deal.close', entityType: 'deal', entityId: deal.id, newValue: { outcome } });
   ok(res, updated);
 });
 
