@@ -1,15 +1,15 @@
-const { db } = require('../db/db');
+const repo = require('../db');
 const { verifyAccessToken } = require('./tokens');
 
 /** Requires a valid Bearer access token. Attaches req.user = { uid, orgId, isSuperAdmin, roleId }. */
-function requireAuth(req, res, next) {
+async function requireAuth(req, res, next) {
   const header = req.headers.authorization;
   if (!header || !header.startsWith('Bearer ')) {
     return res.status(401).json({ error: 'Missing or malformed Authorization header' });
   }
   try {
     req.user = verifyAccessToken(header.substring(7));
-    const dbUser = db.get('users').find({ id: req.user.uid }).value();
+    const dbUser = await repo.findById('users', req.user.uid);
     if (!dbUser || !dbUser.enabled) return res.status(401).json({ error: 'Account not found or disabled' });
     next();
   } catch (err) {
@@ -25,17 +25,17 @@ function requireSuperAdmin(req, res, next) {
 /**
  * Computes the effective permission set for a user:
  *   role permissions  ∪ user GRANT overrides  −  user REVOKE overrides
- * Super Admins implicitly have every permission everywhere.
+ * Super Admins implicitly have every permission everywhere (represented as `null`).
  */
-function getEffectivePermissions(userId) {
-  const user = db.get('users').find({ id: userId }).value();
+async function getEffectivePermissions(userId) {
+  const user = await repo.findById('users', userId);
   if (!user) return new Set();
-  if (user.isSuperAdmin) return null; // null == "all permissions", checked specially below
+  if (user.isSuperAdmin) return null; // null == "all permissions"
 
   const rolePerms = user.roleId
-    ? db.get('rolePermissions').filter({ roleId: user.roleId }).map('permission').value()
+    ? (await repo.list('rolePermissions', { roleId: user.roleId })).map((r) => r.permission)
     : [];
-  const overrides = db.get('userPermissionOverrides').filter({ userId }).value();
+  const overrides = await repo.list('userPermissionOverrides', { userId });
 
   const effective = new Set(rolePerms);
   overrides.forEach((o) => {
@@ -47,9 +47,9 @@ function getEffectivePermissions(userId) {
 
 /** Route middleware factory: requirePermission('crm.view') */
 function requirePermission(permission) {
-  return (req, res, next) => {
+  return async (req, res, next) => {
     if (req.user?.isSuperAdmin) return next();
-    const effective = getEffectivePermissions(req.user.uid);
+    const effective = await getEffectivePermissions(req.user.uid);
     if (effective && effective.has(permission)) return next();
     return res.status(403).json({ error: `Missing required permission: ${permission}` });
   };
