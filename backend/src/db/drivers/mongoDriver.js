@@ -1,49 +1,52 @@
 /**
- * MONGODB DRIVER — TEMPLATE, NOT YET ACTIVE.
+ * MONGODB DRIVER — ACTIVE.
  *
- * To activate:
- *   1. npm install mongodb
- *   2. Set DB_DRIVER=mongodb and DATABASE_URL=mongodb+srv://user:pass@cluster/dbname in .env
- *   3. No schema/migration step needed — Mongo is schemaless, and every doc this
- *      app produces is already a plain JS object, which is exactly a Mongo document.
- *      This is the least-work database to swap to.
- *   4. Implement the 8 functions below (see example shape at the bottom).
- *   5. Delete or rename this comment block once implemented.
+ * Activated via:
+ *   1. npm install mongodb   (run inside backend/)
+ *   2. DB_DRIVER=mongodb and DATABASE_URL=mongodb+srv://... set in .env
  *
- * Every function must match the contract documented in src/db/index.js exactly
- * (same params, same return shape) — that contract is what lets every route
- * and service in the app work unchanged.
+ * Every doc this app produces already has an `id` field (uuid) that all
+ * routes/services use as the primary key — so we always filter/query by
+ * that `id` field, never Mongo's own `_id`. We strip `_id` out of every
+ * returned doc so callers never see it and the shape stays identical to
+ * the lowdb driver.
  */
 
-const REQUIRED_METHODS = ['list', 'findOne', 'findById', 'insert', 'updateById', 'updateWhere', 'removeById', 'removeWhere', 'count'];
+const { MongoClient } = require('mongodb');
 
-function notImplemented(name) {
-  return async () => {
-    throw new Error(
-      `MongoDB driver method "${name}" is not implemented yet. ` +
-      `See src/db/drivers/mongoDriver.js for setup steps.`
-    );
-  };
+if (!process.env.DATABASE_URL) {
+  throw new Error(
+    'DB_DRIVER=mongodb but DATABASE_URL is not set. Add it to your .env, ' +
+    'e.g. DATABASE_URL=mongodb+srv://user:pass@cluster0.xxxxx.mongodb.net/yourDbName'
+  );
 }
 
-const driver = {};
-REQUIRED_METHODS.forEach((name) => { driver[name] = notImplemented(name); });
-
-/*
-Example implementation shape once you've npm installed `mongodb`:
-
-const { MongoClient } = require('mongodb');
 const client = new MongoClient(process.env.DATABASE_URL);
-const dbPromise = client.connect().then(() => client.db());
+const dbPromise = client.connect().then((c) => {
+  console.log('[db] MongoDB connected');
+  return c.db(); // uses the db name from the DATABASE_URL path, e.g. /yourDbName
+});
+
+function strip(doc) {
+  if (!doc) return null;
+  const { _id, ...rest } = doc;
+  return rest;
+}
 
 async function list(collection, filter = {}) {
   const db = await dbPromise;
-  return db.collection(collection).find(filter).project({ _id: 0 }).toArray();
+  const docs = await db.collection(collection).find(filter).toArray();
+  return docs.map(strip);
 }
 
 async function findOne(collection, filter = {}) {
   const db = await dbPromise;
-  return db.collection(collection).findOne(filter, { projection: { _id: 0 } });
+  const doc = await db.collection(collection).findOne(filter);
+  return strip(doc);
+}
+
+async function findById(collection, id) {
+  return findOne(collection, { id });
 }
 
 async function insert(collection, doc) {
@@ -54,15 +57,37 @@ async function insert(collection, doc) {
 
 async function updateById(collection, id, patch) {
   const db = await dbPromise;
-  await db.collection(collection).updateOne({ id }, { $set: patch });
-  return db.collection(collection).findOne({ id }, { projection: { _id: 0 } });
+  const result = await db.collection(collection).findOneAndUpdate(
+    { id },
+    { $set: patch },
+    { returnDocument: 'after' }
+  );
+  // driver versions differ on whether findOneAndUpdate returns {value} or the doc itself
+  const updated = result && result.value !== undefined ? result.value : result;
+  return strip(updated);
 }
 
-// ...and so on for the remaining 4 methods, following the same pattern.
-// Note: findById, updateWhere, removeById, removeWhere, count all follow
-// directly from Mongo's native filter/update/delete/countDocuments methods —
-// this is the most natural fit of the three drivers, since the interface in
-// src/db/index.js was deliberately modeled after Mongo-style operations.
-*/
+async function updateWhere(collection, filter, patch) {
+  const db = await dbPromise;
+  const result = await db.collection(collection).updateMany(filter, { $set: patch });
+  return result.modifiedCount;
+}
 
-module.exports = driver;
+async function removeById(collection, id) {
+  const db = await dbPromise;
+  const result = await db.collection(collection).deleteOne({ id });
+  return result.deletedCount > 0;
+}
+
+async function removeWhere(collection, filter) {
+  const db = await dbPromise;
+  const result = await db.collection(collection).deleteMany(filter);
+  return result.deletedCount;
+}
+
+async function count(collection, filter = {}) {
+  const db = await dbPromise;
+  return db.collection(collection).countDocuments(filter);
+}
+
+module.exports = { list, findOne, findById, insert, updateById, updateWhere, removeById, removeWhere, count };
