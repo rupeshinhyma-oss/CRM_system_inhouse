@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const http = require('http');
+const path = require('path');
 const cors = require('cors');
 const { Server } = require('socket.io');
 
@@ -53,6 +54,17 @@ app.use('/api/v1/groups', groupRoutes);
 app.use('/api/v1', messageRoutes); // /conversations*, /messages/:id/*
 app.use('/api/v1/collaboration', collaborationRoutes);
 app.use('/api/v1/notifications', notificationRoutes);
+
+// --- Serve the frontend from the same Express app/port, so one Railway (or any) ---
+// --- deployment hosts both the API and the UI. Relative fetch('/api/v1/...') and ---
+// --- io(window.location.origin) calls in app.js work unchanged in both places.  ---
+const FRONTEND_DIR = path.join(__dirname, '..', '..', 'frontend');
+app.use(express.static(FRONTEND_DIR));
+
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api/') || req.path === '/health') return next();
+  res.sendFile(path.join(FRONTEND_DIR, 'index.html'));
+});
 
 app.use((req, res) => res.status(404).json({ error: 'Not found' }));
 
