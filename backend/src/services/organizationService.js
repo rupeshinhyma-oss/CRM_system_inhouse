@@ -1,15 +1,17 @@
 const { v4: uuidv4 } = require('uuid');
 const bcrypt = require('bcryptjs');
-const { db, nowIso, seedDefaultRolesForOrg } = require('../db/db');
+const repo = require('../db');
+const { nowIso } = require('../utils/time');
+const { seedDefaultRolesForOrg } = require('../db/seed');
 
 /** Self-service signup: creates a brand-new Organization + its Owner user. */
-function createOrganizationWithOwner({ orgName, ownerEmail, ownerPassword, ownerDisplayName, industry, country }) {
+async function createOrganizationWithOwner({ orgName, ownerEmail, ownerPassword, ownerDisplayName, industry, country }) {
   const emailLower = ownerEmail.toLowerCase().trim();
-  if (db.get('users').find({ email: emailLower }).value()) {
+  if (await repo.findOne('users', { email: emailLower })) {
     throw Object.assign(new Error('An account with this email already exists'), { status: 409 });
   }
 
-  const org = {
+  const org = await repo.insert('organizations', {
     id: uuidv4(),
     name: orgName,
     logoUrl: null,
@@ -22,16 +24,15 @@ function createOrganizationWithOwner({ orgName, ownerEmail, ownerPassword, owner
     subscriptionPlan: 'FREE',
     storageUsedMb: 0,
     storageQuotaMb: 1024,
-    status: 'ACTIVE', // ACTIVE | SUSPENDED
+    status: 'ACTIVE', // ACTIVE | SUSPENDED | DELETED
     settings: { aiEnabled: false, crmEnabled: true, branding: {} },
     createdAt: nowIso(),
     updatedAt: nowIso(),
-  };
-  db.get('organizations').push(org).write();
+  });
 
-  const roles = seedDefaultRolesForOrg(org.id);
+  const roles = await seedDefaultRolesForOrg(org.id);
 
-  const owner = {
+  const owner = await repo.insert('users', {
     id: uuidv4(),
     orgId: org.id,
     email: emailLower,
@@ -52,26 +53,24 @@ function createOrganizationWithOwner({ orgName, ownerEmail, ownerPassword, owner
     lastLoginAt: null,
     createdAt: nowIso(),
     updatedAt: nowIso(),
-  };
-  db.get('users').push(owner).write();
+  });
 
   return { organization: org, owner, roles };
 }
 
-function listOrganizations() {
-  return db.get('organizations').value();
+async function listOrganizations() {
+  return repo.list('organizations');
 }
 
-function setOrganizationStatus(orgId, status) {
-  const updated = db.get('organizations').find({ id: orgId }).assign({ status, updatedAt: nowIso() }).write();
+async function setOrganizationStatus(orgId, status) {
+  const updated = await repo.updateById('organizations', orgId, { status, updatedAt: nowIso() });
   if (!updated) throw Object.assign(new Error('Organization not found'), { status: 404 });
   return updated;
 }
 
-function deleteOrganization(orgId) {
+async function deleteOrganization(orgId) {
   // Soft-delete pattern: mark suspended + tag deletedAt rather than destroying data outright.
-  const updated = db.get('organizations').find({ id: orgId })
-    .assign({ status: 'DELETED', deletedAt: nowIso(), updatedAt: nowIso() }).write();
+  const updated = await repo.updateById('organizations', orgId, { status: 'DELETED', deletedAt: nowIso(), updatedAt: nowIso() });
   if (!updated) throw Object.assign(new Error('Organization not found'), { status: 404 });
   return updated;
 }
