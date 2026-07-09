@@ -20,13 +20,36 @@
 - `belongsToSameOrg(req, resourceOrgId)` is the single choke point every route uses before returning or mutating a record. Super Admin bypasses it; nobody else does.
 - The only place two organizations' data touches is `sharedOrganizations` + `sharedResourceGrants` — see §5.
 
+## 2.5 Database abstraction layer (swap databases by writing ONE file)
+
+Every route, service, and middleware talks to storage only through 8 generic
+async methods (`list`, `findOne`, `findById`, `insert`, `updateById`,
+`updateWhere`, `removeById`, `removeWhere`, `count`) defined in
+`src/db/index.js` and implemented today by `src/db/drivers/lowdbDriver.js`.
+
+Nothing outside `src/db/drivers/*` imports `lowdb` (or would import `pg`,
+`mongodb`, etc.) directly. To move to Postgres, MySQL, or MongoDB later:
+
+1. Implement the 8 methods in the matching template (`postgresDriver.js`,
+   `mysqlDriver.js`, or `mongoDriver.js` — already scaffolded with setup
+   instructions and example code in comments).
+2. Set `DB_DRIVER=postgres` (or `mysql`/`mongodb`) and `DATABASE_URL` in `.env`.
+3. `npm install` whichever client library that driver needs.
+
+That's it — no route, service, or permission check changes, because none of
+them know which database is underneath. This is also why every repository
+call site is `await`ed even though lowdb itself is synchronous: a real
+network-backed database genuinely needs the `await`, and retrofitting async
+across 19 files later would have been a much bigger job than building it in
+from the start.
+
 ## 3. Identity & auth
 
-- `POST /auth/register-organization` — the *only* public signup path. Creates an `Organization` + its `ORG_OWNER` user in one transaction-like operation (lowdb has no real transactions; this is a documented gap the Postgres migration closes with a real `$transaction`).
+- `POST /auth/register-organization` — the *only* public signup path for organizations. Creates an `Organization` + its `ORG_OWNER` user in one transaction-like operation (lowdb has no real transactions; this is a documented gap the Postgres migration closes with a real `$transaction`).
 - `POST /auth/login`, `POST /auth/refresh` (rotating), `POST /auth/logout` (revokes all refresh tokens for the user), `GET /auth/me`.
 - Access tokens: 15 min JWT, payload `{ uid, orgId, isSuperAdmin, roleId }`.
 - Refresh tokens: opaque random string, only its SHA-256 hash is stored, single-use (rotated), revocable individually or all-at-once.
-- The Super Admin is bootstrapped once from `SUPER_ADMIN_EMAIL`/`SUPER_ADMIN_PASSWORD` at server start (`bootstrapSuperAdminIfNeeded`) and is a no-op if one already exists — this is the enforcement mechanism for "only one Super Admin ever."
+- **The Super Admin is created through the app itself, not environment variables.** `GET /api/v1/setup/status` tells the frontend whether a Super Admin exists yet; if not, the frontend shows a one-time "System setup" screen that calls `POST /api/v1/setup/super-admin`. That endpoint permanently locks itself (returns 409) the instant one Super Admin exists — there is no API path to create a second one. See `routes/v1/setup.js`.
 
 ## 4. Permission system (PBAC)
 
