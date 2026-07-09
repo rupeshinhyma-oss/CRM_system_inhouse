@@ -5,10 +5,10 @@ const path = require('path');
 const cors = require('cors');
 const { Server } = require('socket.io');
 
-const { bootstrapSuperAdminIfNeeded } = require('./db/db');
 const { securityHeaders, createRateLimiter } = require('./middleware/security');
 const { registerSocketHandlers } = require('./sockets');
 
+const setupRoutes = require('./routes/v1/setup');
 const authRoutes = require('./routes/v1/auth');
 const organizationRoutes = require('./routes/v1/organizations');
 const roleRoutes = require('./routes/v1/roles');
@@ -25,7 +25,10 @@ const messageRoutes = require('./routes/v1/messages');
 const collaborationRoutes = require('./routes/v1/collaboration');
 const notificationRoutes = require('./routes/v1/notifications');
 
-bootstrapSuperAdminIfNeeded();
+// NOTE: there is no env-based Super Admin bootstrap anymore. The very first
+// person to open this app creates the Super Admin account themselves through
+// a real signup form — see /api/v1/setup and the frontend's "System setup"
+// screen. That endpoint permanently locks itself once one Super Admin exists.
 
 const app = express();
 const server = http.createServer(app);
@@ -37,8 +40,9 @@ app.use(cors({ origin: ALLOWED_ORIGINS, credentials: true }));
 app.use(express.json({ limit: '5mb' }));
 app.use(createRateLimiter({ windowMs: 60_000, max: 300 }));
 
-app.get('/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
+app.get('/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime(), dbDriver: process.env.DB_DRIVER || 'lowdb' }));
 
+app.use('/api/v1/setup', setupRoutes);
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/organizations', organizationRoutes);
 app.use('/api/v1/roles', roleRoutes);
@@ -78,4 +82,6 @@ const io = new Server(server, { cors: { origin: ALLOWED_ORIGINS, credentials: tr
 registerSocketHandlers(io);
 
 const PORT = process.env.PORT || 8080;
-server.listen(PORT, () => console.log(`Enterprise CRM+Chat backend listening on :${PORT}`));
+server.listen(PORT, () => {
+  console.log(`Enterprise CRM+Chat backend listening on :${PORT} (DB_DRIVER=${process.env.DB_DRIVER || 'lowdb'})`);
+});
