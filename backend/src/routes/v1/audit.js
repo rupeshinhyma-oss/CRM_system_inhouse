@@ -1,15 +1,13 @@
 const express = require('express');
-const { db } = require('../../db/db');
+const repo = require('../../db');
 const { requireAuth, requirePermission } = require('../../middleware/authGuards');
 const { ok, paginate } = require('../../utils/respond');
 
 const router = express.Router();
 
-// GET /api/v1/audit-logs?entityType=&userId=&action=&page=&pageSize=
-// Super Admin sees everything; org admins (admin.audit) see only their own org's logs.
-router.get('/', requireAuth, requirePermission('admin.audit'), (req, res) => {
+router.get('/', requireAuth, requirePermission('admin.audit'), async (req, res) => {
   const { entityType, userId, action, page, pageSize } = req.query;
-  let logs = req.user.isSuperAdmin ? db.get('auditLogs').value() : db.get('auditLogs').filter({ orgId: req.user.orgId }).value();
+  let logs = req.user.isSuperAdmin ? await repo.list('auditLogs') : await repo.list('auditLogs', { orgId: req.user.orgId });
 
   if (entityType) logs = logs.filter((l) => l.entityType === entityType);
   if (userId) logs = logs.filter((l) => l.userId === userId);
