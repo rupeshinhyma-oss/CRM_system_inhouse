@@ -378,6 +378,17 @@ document.getElementById('newGroupBtn').addEventListener('click', async () => {
   });
 });
 
+// ------------------------- CRM sub-tabs (Contacts / Leads / Deals / Companies) -------------------------
+
+document.querySelectorAll('.crm-subtab').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.crm-subtab').forEach((b) => b.classList.remove('active'));
+    btn.classList.add('active');
+    const tab = btn.dataset.crmtab;
+    document.querySelectorAll('.crm-subview').forEach((v) => v.classList.toggle('hidden', v.id !== `crm-subview-${tab}`));
+  });
+});
+
 // ------------------------- Team view + Invite -------------------------
 
 async function loadTeamMembers() {
