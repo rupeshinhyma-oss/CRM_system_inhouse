@@ -184,6 +184,7 @@ document.querySelectorAll('.nav-item').forEach((btn) => {
 function setActiveView(view) {
   document.querySelectorAll('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
   document.querySelectorAll('.view').forEach((v) => v.classList.toggle('hidden', v.id !== `view-${view}`));
+  if (view === 'users') loadTeamMembers();
 }
 
 // ------------------------- Realtime (Socket.IO) -------------------------
@@ -373,6 +374,74 @@ document.getElementById('newGroupBtn').addEventListener('click', async () => {
       if (conv) openConversation(conv);
     } catch (err) {
       alert(err.message);
+    }
+  });
+});
+
+// ------------------------- Team view + Invite -------------------------
+
+async function loadTeamMembers() {
+  const errEl = document.getElementById('teamError');
+  errEl.textContent = '';
+  try {
+    const { data: users } = await api('/users');
+    renderTeamList(users);
+  } catch (err) {
+    // Most likely the current user lacks user.view permission — degrade gracefully.
+    renderTeamList([]);
+    errEl.textContent = err.message;
+  }
+}
+
+function renderTeamList(users) {
+  const el = document.getElementById('teamList');
+  el.innerHTML = '';
+  if (!users.length) {
+    el.innerHTML = '<div style="padding:16px;color:#8b93a3;font-size:13px;">No teammates to show yet.</div>';
+    return;
+  }
+  users.forEach((u) => {
+    const item = document.createElement('div');
+    item.className = 'conversation-item';
+    item.innerHTML = `
+      <div class="conv-title">${escapeHtml(u.displayName)}${u.isSuperAdmin ? ' <span style="color:#7dd3fc;font-size:11px;">(Super Admin)</span>' : ''}</div>
+      <div class="conv-preview">${escapeHtml(u.email)}${u.enabled ? '' : ' · disabled'}</div>
+    `;
+    el.appendChild(item);
+  });
+}
+
+document.getElementById('inviteBtn').addEventListener('click', () => {
+  openModal('Invite a teammate', `
+    <label style="font-size:12px;color:#8b93a3;">Full name</label>
+    <input type="text" id="inviteDisplayName" placeholder="Jane Doe" />
+    <label style="font-size:12px;color:#8b93a3;">Email</label>
+    <input type="email" id="inviteEmail" placeholder="jane@company.com" />
+    <label style="font-size:12px;color:#8b93a3;">Password</label>
+    <input type="password" id="invitePassword" minlength="8" placeholder="min 8 characters" />
+    <p style="font-size:12px;color:#8b93a3;margin:4px 0 0;">
+      Share this email and password with them personally — they'll use it to log in.
+    </p>
+    <button class="primary-btn" id="createInviteBtn">Create account</button>
+    <p class="error-msg" id="inviteError"></p>
+  `);
+
+  document.getElementById('createInviteBtn').addEventListener('click', async () => {
+    const errEl = document.getElementById('inviteError');
+    errEl.textContent = '';
+    const displayName = document.getElementById('inviteDisplayName').value.trim();
+    const email = document.getElementById('inviteEmail').value.trim();
+    const password = document.getElementById('invitePassword').value;
+
+    if (!displayName || !email || !password) { errEl.textContent = 'All fields are required.'; return; }
+    if (password.length < 8) { errEl.textContent = 'Password must be at least 8 characters.'; return; }
+
+    try {
+      await api('/users/invite', { method: 'POST', body: { displayName, email, password } });
+      closeModal();
+      await loadTeamMembers();
+    } catch (err) {
+      errEl.textContent = err.message;
     }
   });
 });
