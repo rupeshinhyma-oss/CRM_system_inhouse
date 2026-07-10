@@ -32,23 +32,36 @@ router.get('/', requireAuth, requirePermission('user.view'), async (req, res) =>
 });
 
 router.post('/invite', requireAuth, requirePermission('user.create'), async (req, res) => {
-  const { email, displayName, roleId, departmentId } = req.body || {};
-  if (!email || !displayName || !roleId) return fail(res, 400, 'email, displayName and roleId are required');
+  const { email, displayName, password, roleId, departmentId } = req.body || {};
+  if (!email || !displayName) return fail(res, 400, 'email and displayName are required');
+  if (password && password.length < 8) return fail(res, 400, 'Password must be at least 8 characters');
 
   const emailLower = email.toLowerCase().trim();
   if (await repo.findOne('users', { email: emailLower })) return fail(res, 409, 'An account with this email already exists');
 
-  const role = await repo.findById('roles', roleId);
-  if (!role || role.orgId !== req.user.orgId) return fail(res, 400, 'roleId does not belong to your organization');
+  // roleId is optional — the inviting admin can assign a role later from the
+  // Team page. If omitted, fall back to this org's default "Employee" role
+  // (if one exists yet), otherwise leave unset (no extra permissions).
+  let resolvedRoleId = null;
+  if (roleId) {
+    const role = await repo.findById('roles', roleId);
+    if (!role || role.orgId !== req.user.orgId) return fail(res, 400, 'roleId does not belong to your organization');
+    resolvedRoleId = roleId;
+  } else if (req.user.orgId) {
+    const defaultRole = await repo.findOne('roles', { orgId: req.user.orgId, key: 'EMPLOYEE' });
+    resolvedRoleId = defaultRole ? defaultRole.id : null;
+  }
 
-  const tempPassword = crypto.randomBytes(9).toString('base64url');
+  // If the admin sets a password themselves (to hand off personally), use it.
+  // Otherwise fall back to auto-generating one, same as before.
+  const finalPassword = password || crypto.randomBytes(9).toString('base64url');
   const employeeCount = await repo.count('users', { orgId: req.user.orgId });
 
   const user = await repo.insert('users', {
     id: uuidv4(),
     orgId: req.user.orgId,
     email: emailLower,
-    passwordHash: bcrypt.hashSync(tempPassword, 10),
+    passwordHash: bcrypt.hashSync(finalPassword, 10),
     displayName,
     avatarUrl: null,
     designation: null,
@@ -59,7 +72,7 @@ router.post('/invite', requireAuth, requirePermission('user.create'), async (req
     timezone: 'UTC',
     language: 'en',
     isSuperAdmin: false,
-    roleId,
+    roleId: resolvedRoleId,
     status: 'OFFLINE',
     enabled: true,
     lastLoginAt: null,
@@ -68,8 +81,9 @@ router.post('/invite', requireAuth, requirePermission('user.create'), async (req
   });
 
   await recordAudit(req, { action: 'user.invite', entityType: 'user', entityId: user.id, newValue: publicUser(user) });
-  // Production: email `tempPassword` via a secure invite link instead of returning it in the API response.
-  created(res, { user: publicUser(user), temporaryPassword: tempPassword });
+  // Production: email the password via a secure invite link instead of returning it in the API response.
+  // For now the admin shares it with the invitee personally, as requested.
+  created(res, { user: publicUser(user), temporaryPassword: password ? undefined : finalPassword });
 });
 
 router.get('/:id', requireAuth, requirePermission('user.view'), async (req, res) => {
