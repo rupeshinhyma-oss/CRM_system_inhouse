@@ -120,7 +120,16 @@
     <main class="view hidden" id="view-contacts"><div class="stub">Contacts CRM view — coming in the next build phase.</div></main>
     <main class="view hidden" id="view-leads"><div class="stub">Leads CRM view — coming in the next build phase.</div></main>
     <main class="view hidden" id="view-deals"><div class="stub">Deals CRM view — coming in the next build phase.</div></main>
-    <main class="view hidden" id="view-users"><div class="stub">Team management view — coming in the next build phase.</div></main>
+    <main class="view hidden" id="view-users">
+      <section class="chat-list" style="width:100%;border-right:none;">
+        <div class="chat-list-header">
+          <h2>Team</h2>
+          <button id="inviteBtn" class="icon-btn" title="Invite a teammate">＋ Invite</button>
+        </div>
+        <div id="teamError" class="error-msg" style="padding:0 16px;"></div>
+        <div id="teamList" class="conversation-list"></div>
+      </section>
+    </main>
   </div>
 
   <!-- Modals -->
