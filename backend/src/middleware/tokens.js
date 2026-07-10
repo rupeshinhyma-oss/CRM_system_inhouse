@@ -1,110 +1,71 @@
+const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
 const repo = require('../db');
 const { nowIso } = require('../utils/time');
-const { verifyAccessToken } = require('../middleware/tokens');
 
-const onlineSockets = new Map(); // uid -> Set of socket ids
-
-async function conversationForUser(conv, uid) {
-  if (conv.type === 'DIRECT') return conv.userAId === uid || conv.userBId === uid;
-  return !!(await repo.findOne('groupMembers', { groupId: conv.groupId, userId: uid }));
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  throw new Error('JWT_SECRET is not set. Add it to your .env (a long random string).');
 }
 
-function publicUser(u) {
-  if (!u) return null;
-  const { passwordHash, ...safe } = u;
-  return safe;
+const ACCESS_TOKEN_TTL = '15m';
+const REFRESH_TOKEN_TTL_DAYS = 30;
+
+/** Signs a short-lived JWT access token for a user. */
+function signAccessToken(user) {
+  return jwt.sign(
+    { uid: user.id, orgId: user.orgId || null, isSuperAdmin: !!user.isSuperAdmin, roleId: user.roleId || null },
+    JWT_SECRET,
+    { expiresIn: ACCESS_TOKEN_TTL }
+  );
 }
 
-function registerSocketHandlers(io) {
-  io.use((socket, next) => {
-    try {
-      const token = socket.handshake.auth?.token;
-      if (!token) return next(new Error('Authentication token required'));
-      const payload = verifyAccessToken(token);
-      repo.findById('users', payload.uid).then((user) => {
-        if (!user || !user.enabled) return next(new Error('Account not found or disabled'));
-        socket.userId = payload.uid;
-        socket.orgId = payload.orgId;
-        next();
-      }).catch(() => next(new Error('Invalid or expired token')));
-    } catch (err) {
-      next(new Error('Invalid or expired token'));
-    }
+/** Verifies a JWT access token, returns its payload, or throws if invalid/expired. */
+function verifyAccessToken(token) {
+  return jwt.verify(token, JWT_SECRET);
+}
+
+/** Issues a new opaque refresh token, stored in the DB, tied to a user + device. */
+async function issueRefreshToken(user, meta = {}) {
+  const token = uuidv4() + uuidv4(); // opaque, unguessable
+  const expiresAt = new Date(Date.now() + REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  await repo.insert('refreshTokens', {
+    id: uuidv4(),
+    token,
+    userId: user.id,
+    ip: meta.ip || null,
+    userAgent: meta.userAgent || null,
+    revoked: false,
+    expiresAt,
+    createdAt: nowIso(),
   });
-
-  io.on('connection', async (socket) => {
-    const uid = socket.userId;
-
-    if (!onlineSockets.has(uid)) onlineSockets.set(uid, new Set());
-    onlineSockets.get(uid).add(socket.id);
-
-    await repo.updateById('users', uid, { status: 'ONLINE', lastSeenAt: nowIso() });
-
-    socket.join(`user:${uid}`);
-    if (socket.orgId) socket.join(`org:${socket.orgId}`);
-
-    const allConversations = await repo.list('conversations');
-    for (const c of allConversations) {
-      if (await conversationForUser(c, uid)) socket.join(`conversation:${c.id}`);
-    }
-
-    if (socket.orgId) io.to(`org:${socket.orgId}`).emit('presence:update', { userId: uid, status: 'ONLINE' });
-
-    socket.on('chat:send', async (payload, ack) => {
-      try {
-        const { conversationId, content, replyToId } = payload || {};
-        const conv = await repo.findById('conversations', conversationId);
-        if (!conv) return ack?.({ error: 'Conversation not found' });
-        if (!(await conversationForUser(conv, uid))) return ack?.({ error: 'Not a member of this conversation' });
-        if (!content || !content.trim()) return ack?.({ error: 'Message content is required' });
-
-        const message = await repo.insert('messages', {
-          id: uuidv4(), conversationId, senderId: uid, content: content.trim(),
-          replyToId: replyToId || null, forwardedFromId: null, status: 'SENT',
-          edited: false, deleted: false, pinned: false, starredBy: [], reactions: [],
-          createdAt: nowIso(), editedAt: null,
-        });
-        await repo.updateById('conversations', conversationId, { lastMessageAt: message.createdAt });
-
-        const sender = await repo.findById('users', uid);
-        const outgoing = { ...message, sender: publicUser(sender) };
-        io.to(`conversation:${conversationId}`).emit('chat:message', outgoing);
-        ack?.({ ok: true, message: outgoing });
-      } catch (err) {
-        ack?.({ error: 'Failed to send message' });
-      }
-    });
-
-    socket.on('chat:typing', async ({ conversationId, isTyping }) => {
-      const user = await repo.findById('users', uid);
-      socket.to(`conversation:${conversationId}`).emit('chat:typing', {
-        conversationId, userId: uid, displayName: user?.displayName, isTyping: !!isTyping,
-      });
-    });
-
-    socket.on('chat:read', async ({ conversationId, messageId }) => {
-      await repo.updateById('messages', messageId, { status: 'READ' });
-      socket.to(`conversation:${conversationId}`).emit('chat:read', { conversationId, messageId, readBy: uid });
-    });
-
-    socket.on('chat:join', async ({ conversationId }) => {
-      const conv = await repo.findById('conversations', conversationId);
-      if (conv && (await conversationForUser(conv, uid))) socket.join(`conversation:${conversationId}`);
-    });
-
-    socket.on('disconnect', async () => {
-      const sockets = onlineSockets.get(uid);
-      if (sockets) {
-        sockets.delete(socket.id);
-        if (sockets.size === 0) {
-          onlineSockets.delete(uid);
-          await repo.updateById('users', uid, { status: 'OFFLINE', lastSeenAt: nowIso() });
-          if (socket.orgId) io.to(`org:${socket.orgId}`).emit('presence:update', { userId: uid, status: 'OFFLINE' });
-        }
-      }
-    });
-  });
+  return token;
 }
 
-module.exports = { registerSocketHandlers, onlineSockets };
+/** Validates + rotates a refresh token: revokes the old one, issues a new pair. */
+async function rotateRefreshToken(oldToken, meta = {}) {
+  const record = await repo.findOne('refreshTokens', { token: oldToken });
+  if (!record || record.revoked || new Date(record.expiresAt) < new Date()) return null;
+
+  const user = await repo.findById('users', record.userId);
+  if (!user || !user.enabled) return null;
+
+  await repo.updateById('refreshTokens', record.id, { revoked: true });
+
+  const accessToken = signAccessToken(user);
+  const refreshToken = await issueRefreshToken(user, meta);
+  return { accessToken, refreshToken };
+}
+
+/** Revokes every refresh token for a user (e.g. on logout / "log out everywhere"). */
+async function revokeAllRefreshTokensForUser(userId) {
+  await repo.updateWhere('refreshTokens', { userId, revoked: false }, { revoked: true });
+}
+
+module.exports = {
+  signAccessToken,
+  verifyAccessToken,
+  issueRefreshToken,
+  rotateRefreshToken,
+  revokeAllRefreshTokensForUser,
+};
