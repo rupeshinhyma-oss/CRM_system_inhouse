@@ -403,12 +403,70 @@ function renderTeamList(users) {
   users.forEach((u) => {
     const item = document.createElement('div');
     item.className = 'conversation-item';
+    item.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:10px;';
     item.innerHTML = `
-      <div class="conv-title">${escapeHtml(u.displayName)}${u.isSuperAdmin ? ' <span style="color:#7dd3fc;font-size:11px;">(Super Admin)</span>' : ''}</div>
-      <div class="conv-preview">${escapeHtml(u.email)}${u.enabled ? '' : ' · disabled'}</div>
+      <div>
+        <div class="conv-title">${escapeHtml(u.displayName)}${u.isSuperAdmin ? ' <span style="color:#7dd3fc;font-size:11px;">(Super Admin)</span>' : ''}</div>
+        <div class="conv-preview">${escapeHtml(u.email)}${u.enabled ? '' : ' · disabled'}</div>
+      </div>
+      <div style="display:flex;gap:6px;flex-shrink:0;">
+        <button class="icon-btn edit-user-btn" data-user-id="${u.id}">Edit</button>
+        <button class="icon-btn delete-user-btn" data-user-id="${u.id}" style="color:#f87171;border-color:#4a2a2a;">Delete</button>
+      </div>
     `;
     el.appendChild(item);
   });
+
+  document.querySelectorAll('.edit-user-btn').forEach((btn) => {
+    btn.addEventListener('click', () => openEditUserModal(users.find((u) => u.id === btn.dataset.userId)));
+  });
+  document.querySelectorAll('.delete-user-btn').forEach((btn) => {
+    btn.addEventListener('click', () => deleteUser(users.find((u) => u.id === btn.dataset.userId)));
+  });
+}
+
+function openEditUserModal(user) {
+  if (!user) return;
+  openModal(`Edit ${user.displayName}`, `
+    <label style="font-size:12px;color:#8b93a3;">Full name</label>
+    <input type="text" id="editDisplayName" value="${escapeHtml(user.displayName)}" />
+    <label style="font-size:12px;color:#8b93a3;">Designation</label>
+    <input type="text" id="editDesignation" value="${escapeHtml(user.designation || '')}" placeholder="e.g. Sales Rep" />
+    <label style="font-size:12px;color:#8b93a3;">Phone</label>
+    <input type="text" id="editPhone" value="${escapeHtml(user.phone || '')}" />
+    <button class="primary-btn" id="saveUserBtn">Save changes</button>
+    <p class="error-msg" id="editUserError"></p>
+  `);
+
+  document.getElementById('saveUserBtn').addEventListener('click', async () => {
+    const errEl = document.getElementById('editUserError');
+    errEl.textContent = '';
+    const displayName = document.getElementById('editDisplayName').value.trim();
+    const designation = document.getElementById('editDesignation').value.trim();
+    const phone = document.getElementById('editPhone').value.trim();
+    if (!displayName) { errEl.textContent = 'Full name is required.'; return; }
+
+    try {
+      await api(`/users/${user.id}`, { method: 'PATCH', body: { displayName, designation, phone } });
+      closeModal();
+      await loadTeamMembers();
+    } catch (err) {
+      errEl.textContent = err.message;
+    }
+  });
+}
+
+async function deleteUser(user) {
+  if (!user) return;
+  if (user.id === state.me.id) { alert("You can't delete your own account."); return; }
+  if (!confirm(`Delete ${user.displayName} (${user.email})? This can't be undone.`)) return;
+
+  try {
+    await api(`/users/${user.id}`, { method: 'DELETE' });
+    await loadTeamMembers();
+  } catch (err) {
+    alert(err.message);
+  }
 }
 
 document.getElementById('inviteBtn').addEventListener('click', () => {
