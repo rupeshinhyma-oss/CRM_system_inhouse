@@ -25,6 +25,18 @@ const client = new MongoClient(process.env.DATABASE_URL);
 const dbPromise = client.connect().then((c) => {
   console.log('[db] MongoDB connected');
   return c.db(); // uses the db name from the DATABASE_URL path, e.g. /yourDbName
+}).catch((err) => {
+  console.error('[db] MongoDB connection failed:', err.message);
+  if (err.codeName === 'AtlasError' || /bad auth/i.test(err.message)) {
+    console.error(
+      '[db] This is an authentication error from Atlas itself, not an app bug. Check:\n' +
+      '  1. The username/password in DATABASE_URL match an existing Atlas Database Access user.\n' +
+      '  2. Any special characters in the password are URL-encoded (@ : / ? # [ ] % etc).\n' +
+      '  3. Network Access in Atlas allows connections from Render (0.0.0.0/0 or Render IPs).\n' +
+      '  4. The cluster hostname in DATABASE_URL is correct.'
+    );
+  }
+  process.exit(1); // fail fast with a clear log line instead of a raw unhandled-rejection trace
 });
 
 function strip(doc) {
