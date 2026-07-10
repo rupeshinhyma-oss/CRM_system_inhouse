@@ -81,6 +81,25 @@ router.post('/invite', requireAuth, requirePermission('user.create'), async (req
   });
 
   await recordAudit(req, { action: 'user.invite', entityType: 'user', entityId: user.id, newValue: publicUser(user) });
+
+  // If there's no org (e.g. invited directly by the platform Super Admin), there's
+  // no default "Employee" role to fall back on, so the new account would otherwise
+  // have zero permissions and get 403'd on everything, including chat. Grant a
+  // sensible working baseline directly as permission overrides in that case.
+  if (!resolvedRoleId) {
+    const baseline = [
+      'chat.view', 'chat.send', 'chat.create_group',
+      'contact.view', 'contact.create', 'contact.edit',
+      'lead.view', 'deal.view',
+      'file.upload', 'file.download',
+    ];
+    for (const permission of baseline) {
+      await repo.insert('userPermissionOverrides', {
+        id: uuidv4(), userId: user.id, permission, effect: 'GRANT', createdAt: nowIso(), createdBy: req.user.uid,
+      });
+    }
+  }
+
   // Production: email the password via a secure invite link instead of returning it in the API response.
   // For now the admin shares it with the invitee personally, as requested.
   created(res, { user: publicUser(user), temporaryPassword: password ? undefined : finalPassword });
