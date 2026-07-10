@@ -77,9 +77,7 @@
 
       <nav class="sidebar-nav">
         <button class="nav-item active" data-view="chat">💬 Chat</button>
-        <button class="nav-item" data-view="contacts">👤 Contacts</button>
-        <button class="nav-item" data-view="leads">🎯 Leads</button>
-        <button class="nav-item" data-view="deals">💼 Deals</button>
+        <button class="nav-item" data-view="crm">📇 CRM</button>
         <button class="nav-item" data-view="users">🧑‍🤝‍🧑 Team</button>
       </nav>
 
@@ -117,9 +115,19 @@
     </main>
 
     <!-- ---------------- Simple stub views for the other modules ---------------- -->
-    <main class="view hidden" id="view-contacts"><div class="stub">Contacts CRM view — coming in the next build phase.</div></main>
-    <main class="view hidden" id="view-leads"><div class="stub">Leads CRM view — coming in the next build phase.</div></main>
-    <main class="view hidden" id="view-deals"><div class="stub">Deals CRM view — coming in the next build phase.</div></main>
+    <!-- ---------------- CRM VIEW (Contacts / Leads / Deals / Companies as sub-tabs) ---------------- -->
+    <main class="view hidden" id="view-crm" style="flex-direction:column;">
+      <div class="chat-list-header" style="border-right:none;">
+        <button class="crm-subtab active" data-crmtab="contacts">👤 Contacts</button>
+        <button class="crm-subtab" data-crmtab="leads">🎯 Leads</button>
+        <button class="crm-subtab" data-crmtab="deals">💼 Deals</button>
+        <button class="crm-subtab" data-crmtab="companies">🏢 Companies</button>
+      </div>
+      <div class="crm-subview" id="crm-subview-contacts"><div class="stub">Contacts CRM view — coming in the next build phase.</div></div>
+      <div class="crm-subview hidden" id="crm-subview-leads"><div class="stub">Leads CRM view — coming in the next build phase.</div></div>
+      <div class="crm-subview hidden" id="crm-subview-deals"><div class="stub">Deals CRM view — coming in the next build phase.</div></div>
+      <div class="crm-subview hidden" id="crm-subview-companies"><div class="stub">Companies CRM view — coming in the next build phase.</div></div>
+    </main>
     <main class="view hidden" id="view-users">
       <section class="chat-list" style="width:100%;border-right:none;">
         <div class="chat-list-header">
