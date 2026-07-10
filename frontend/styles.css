@@ -123,3 +123,13 @@ body {
   padding: 8px 10px; border-radius: 6px; cursor: pointer; font-size: 13px;
 }
 .modal-body .user-option:hover { background: #1f2735; }
+
+/* ---------- CRM view ---------- */
+#view-crm { display: flex; flex-direction: column; }
+.crm-subtab {
+  padding: 7px 12px; border-radius: 6px; border: 1px solid transparent;
+  background: transparent; color: #8b93a3; cursor: pointer; font-size: 13px; margin-right: 4px;
+}
+.crm-subtab:hover { background: #1a1f29; }
+.crm-subtab.active { background: #1f2735; color: #fff; border-color: #2a3140; }
+.crm-subview { flex: 1; display: flex; overflow: auto; }
