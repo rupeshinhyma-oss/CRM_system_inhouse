@@ -43,20 +43,45 @@ async function api(path, { method = 'GET', body, isRetry = false } = {}) {
   return data;
 }
 
+// Refresh tokens are single-use/rotating on the backend (the old one is
+// revoked the instant it's redeemed) — so if several API calls 401 at once
+// (very common right after a page load/refresh, when /auth/me, /organizations,
+// /conversations, etc. all fire together), each one independently calling
+// /auth/refresh with the SAME refresh token means only the first wins; every
+// other caller gets back a 401 from /auth/refresh itself, because the token
+// they're holding was already revoked by the winner. That looked like "the
+// whole app crashes/logs out on refresh" — it wasn't a crash, it was N-1
+// refresh calls racing each other into failure.
+//
+// Fix: make refreshing single-flight. The first caller to need a refresh
+// starts it and stores the in-flight promise; every other concurrent caller
+// just awaits that SAME promise instead of starting their own — so exactly
+// one /auth/refresh call ever goes out for a given expired token, no matter
+// how many API calls needed it at the same moment.
+let refreshInFlight = null;
+
 async function tryRefreshToken() {
-  try {
-    const res = await fetch(API_BASE + '/auth/refresh', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refreshToken: state.refreshToken }),
-    });
-    if (!res.ok) return false;
-    const { data } = await res.json();
-    setTokens(data.accessToken, data.refreshToken);
-    return true;
-  } catch {
-    return false;
-  }
+  if (refreshInFlight) return refreshInFlight;
+
+  refreshInFlight = (async () => {
+    try {
+      const res = await fetch(API_BASE + '/auth/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken: state.refreshToken }),
+      });
+      if (!res.ok) return false;
+      const { data } = await res.json();
+      setTokens(data.accessToken, data.refreshToken);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      refreshInFlight = null;
+    }
+  })();
+
+  return refreshInFlight;
 }
 
 function setTokens(accessToken, refreshToken) {
@@ -252,12 +277,12 @@ async function refreshBuSwitcher() {
   }
 
   const active = units.find((u) => u.active) || units[0];
-  document.getElementById('buSwitcherLabel').textContent = active.name;
+  document.getElementById('buSwitcherLabel').textContent = active.displayName || active.name;
   buSwitcherBtn.classList.remove('hidden');
 
   buSwitcherMenu.innerHTML = units.map((u) => `
     <div class="bu-menu-item ${u.active ? 'active' : ''}" data-bu-id="${u.id}">
-      ${escapeHtml(u.name)} ${u.active ? '✓' : ''}
+      ${escapeHtml(u.displayName || u.name)} ${u.active ? '✓' : ''}
     </div>
   `).join('') + `
     <div class="bu-menu-divider"></div>
@@ -390,20 +415,17 @@ orgAddForm.addEventListener('submit', async (e) => {
 
   const orgName = document.getElementById('orgAddOrgName').value.trim();
 
-  if (!orgName) {
-    errEl.textContent = 'Organization name is required.';
-    return;
-  }
-
   submitBtn.disabled = true;
   submitBtn.textContent = 'Creating…';
   try {
     // Creates the new isolated organization under the CURRENT identity and
     // immediately returns tokens already scoped into it — no separate
     // switch-context call needed (see routes/v1/organizations.js POST /).
+    // orgName is optional — omitting it (empty string) has the backend
+    // auto-name it "Org N (Default)", renamable anytime from Settings.
     const { data } = await api('/organizations', {
       method: 'POST',
-      body: { orgName },
+      body: { orgName: orgName || undefined },
     });
     setTokens(data.accessToken, data.refreshToken);
 
@@ -465,6 +487,11 @@ window.addEventListener('popstate', (e) => {
 // ------------------------- Entering the app -------------------------
 
 async function enterApp() {
+  // This is the ONE call that determines whether the person is actually
+  // authenticated. Everything below it is populating the UI for an
+  // already-confirmed session — if any of those secondary calls fail
+  // (a transient network blip, a slow socket handshake, etc.), that is
+  // NOT the same thing as "not logged in," and must never force a logout.
   const { data: me } = await api('/auth/me');
   state.me = me;
   state.orgUsers = []; // never carry a cached user list across a Super Admin org switch
@@ -494,17 +521,38 @@ async function enterApp() {
       `🔒 Viewing as Super Admin inside "${orgName || 'this organization'}" — data stays isolated to this tenant`;
   }
 
-  await refreshBuSwitcher();
+  // Everything from here on is best-effort UI population for an already
+  // -confirmed session. A failure in any one of these must never bounce
+  // the person back to the login screen — that's what caused refreshing
+  // the page to occasionally "crash" the whole app back out to login.
+  try {
+    await refreshBuSwitcher();
+  } catch (err) {
+    console.error('refreshBuSwitcher failed (non-fatal):', err);
+  }
 
-  connectSocket();
-  await loadConversations();
+  try {
+    connectSocket();
+  } catch (err) {
+    console.error('connectSocket failed (non-fatal):', err);
+  }
+
+  try {
+    await loadConversations();
+  } catch (err) {
+    console.error('loadConversations failed (non-fatal):', err);
+  }
 
   const initialView = pathToView(location.pathname) || 'dashboard';
   setActiveView(initialView, { push: location.pathname !== VIEW_ROUTES[initialView] });
 
   // Reload directly on /accounts (e.g. hard refresh while on the switch page) -> reopen it.
   if (location.pathname === '/accounts' && me.isSuperAdmin) {
-    await openOrgSwitchPage({ push: false });
+    try {
+      await openOrgSwitchPage({ push: false });
+    } catch (err) {
+      console.error('openOrgSwitchPage failed (non-fatal):', err);
+    }
   }
 }
 
@@ -996,8 +1044,20 @@ function escapeHtml(str) {
     try {
       await enterApp();
       return;
-    } catch {
-      clearTokens(); // stale/expired tokens with no valid refresh — fall through below
+    } catch (err) {
+      // enterApp()'s only failure path now is /auth/me itself failing (see
+      // enterApp — every secondary call is wrapped so it can't throw here).
+      // A real auth failure (expired session with no valid refresh left,
+      // account disabled, etc.) correctly logs out. But a plain network
+      // hiccup (page loading before the connection is ready, a dropped
+      // request) shouldn't wipe a perfectly valid session — retry /auth/me
+      // once before giving up.
+      try {
+        await enterApp();
+        return;
+      } catch {
+        clearTokens(); // confirmed auth failure on retry — fall through to login below
+      }
     }
   }
 
