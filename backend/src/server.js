@@ -11,6 +11,7 @@ const { registerSocketHandlers } = require('./sockets');
 const setupRoutes = require('./routes/v1/setup');
 const authRoutes = require('./routes/v1/auth');
 const organizationRoutes = require('./routes/v1/organizations');
+const businessUnitRoutes = require('./routes/v1/businessUnits');
 const roleRoutes = require('./routes/v1/roles');
 const permissionRoutes = require('./routes/v1/permissions');
 const userRoutes = require('./routes/v1/users');
@@ -45,6 +46,7 @@ app.get('/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime
 app.use('/api/v1/setup', setupRoutes);
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/organizations', organizationRoutes);
+app.use('/api/v1/business-units', businessUnitRoutes);
 app.use('/api/v1/roles', roleRoutes);
 app.use('/api/v1/permissions', permissionRoutes);
 app.use('/api/v1/users', userRoutes);
