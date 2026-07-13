@@ -10,6 +10,7 @@ async function recordAudit(req, { action, entityType, entityId, oldValue = null,
   await repo.insert('auditLogs', {
     id: uuidv4(),
     orgId: req.user?.orgId || null,
+    businessUnitId: req.user?.buId || null,
     userId: req.user?.uid || null,
     action,
     entityType,
