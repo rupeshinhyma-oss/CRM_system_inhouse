@@ -109,18 +109,56 @@ async function issueRefreshToken(identity, meta = {}) {
   return issueRefreshTokenWithOrg(identity, identity.defaultOrganizationId || null, meta);
 }
 
-/** Validates + rotates a refresh token: revokes the old one, issues a new pair, preserving activeOrgId. */
+/**
+ * Validates + rotates a refresh token: revokes the old one, issues a new
+ * pair, preserving activeOrgId.
+ *
+ * GRACE WINDOW: rotation is inherently racy across multiple browser tabs
+ * (each tab has its own JS memory/in-flight-refresh tracking — see
+ * frontend/app.js tryRefreshToken — so one tab can't stop another tab from
+ * also trying to redeem the same refresh token at nearly the same moment).
+ * Rather than hard-failing the loser (which force-logs the person out even
+ * though their session is perfectly valid), a refresh token that was
+ * rotated within the last few seconds still hands back the SAME new
+ * token pair it already issued, instead of a fresh one. This keeps
+ * rotation meaningfully single-use (a token that's actually old/stolen
+ * still gets rejected) while not punishing ordinary multi-tab usage or
+ * a burst of parallel requests on page load.
+ */
+const ROTATION_GRACE_MS = 10_000;
+
 async function rotateRefreshToken(oldToken, meta = {}) {
   const record = await repo.findOne('refreshTokens', { token: oldToken });
-  if (!record || record.revoked || new Date(record.expiresAt) < new Date()) return null;
+  if (!record) return null;
+
+  if (record.revoked) {
+    // Already used — but if it was used VERY recently, this is almost
+    // certainly a racing duplicate call for the same rotation (another
+    // tab, or a parallel request), not a replay of a stale/stolen token.
+    // Hand back the replacement token pair that rotation already produced
+    // instead of failing.
+    if (record.replacedByToken && record.revokedAt && (Date.now() - new Date(record.revokedAt).getTime()) < ROTATION_GRACE_MS) {
+      const nextRecord = await repo.findOne('refreshTokens', { token: record.replacedByToken });
+      if (nextRecord && !nextRecord.revoked && new Date(nextRecord.expiresAt) > new Date()) {
+        const identity = await repo.findById('identities', nextRecord.identityId);
+        if (identity && identity.status === 'ACTIVE') {
+          const accessToken = await signAccessToken(identity, { activeOrgId: nextRecord.activeOrgId });
+          return { accessToken, refreshToken: nextRecord.token };
+        }
+      }
+    }
+    return null;
+  }
+
+  if (new Date(record.expiresAt) < new Date()) return null;
 
   const identity = await repo.findById('identities', record.identityId);
   if (!identity || identity.status !== 'ACTIVE') return null;
 
-  await repo.updateById('refreshTokens', record.id, { revoked: true });
+  const refreshToken = await issueRefreshTokenWithOrg(identity, record.activeOrgId, meta);
+  await repo.updateById('refreshTokens', record.id, { revoked: true, revokedAt: nowIso(), replacedByToken: refreshToken });
 
   const accessToken = await signAccessToken(identity, { activeOrgId: record.activeOrgId });
-  const refreshToken = await issueRefreshTokenWithOrg(identity, record.activeOrgId, meta);
   return { accessToken, refreshToken };
 }
 
