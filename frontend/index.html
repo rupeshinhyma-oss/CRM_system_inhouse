@@ -1,3 +1,5 @@
+<!-- FILE: frontend/index.html -->
+<!-- Replace the existing file at this path with this one. -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -67,7 +69,7 @@
     </div>
   </div>
 
-  <!-- ===================== WORKSPACE SELECTOR ("Who's working?" — organization switching) =====================
+  <!-- ===================== WORKSPACE SELECTOR ("Who's working?" — business unit switching) =====================
        Shown after login/signup, before the main app. Not a login screen: the user is already
        authenticated here. Picking a tile only changes which business unit (workspace) is active —
        same user identity throughout. See backend/src/services/businessUnitService.js. -->
@@ -98,26 +100,69 @@
     </div>
   </div>
 
+  <!-- ===================== SUPER ADMIN — ACCOUNT SWITCHING PAGE =====================
+       Only reachable via the "🔁 Switch Account" button in the sidebar header, which only
+       renders for me.isSuperAdmin (see app.js). Lets Super Admin step into any tenant's
+       data context (POST /organizations/:id/switch-context) without impersonating any
+       individual user in that tenant. URL: /accounts -->
+  <div id="orgSwitchScreen" class="auth-screen hidden">
+    <div class="auth-card org-switch-card">
+      <div class="org-switch-top">
+        <div>
+          <h1 class="brand">Switch Organization</h1>
+          <p class="brand-sub" style="margin-bottom:0;">Super Admin — pick a tenant to view &amp; manage</p>
+        </div>
+        <button id="orgSwitchBackBtn" class="link-btn">← Back</button>
+      </div>
+      <input type="text" id="orgSwitchSearch" placeholder="Search organizations…" style="margin:16px 0 10px;" />
+      <div id="orgSwitchList" class="org-switch-list"></div>
+      <p class="error-msg" id="orgSwitchError"></p>
+    </div>
+  </div>
+
   <!-- ===================== MAIN APP (shown right after login/signup) ===================== -->
   <div id="appShell" class="app-shell hidden">
+
+    <!-- Shown only while a Super Admin is "inside" a switched-to tenant -->
+    <div id="actingBanner" class="acting-banner hidden">
+      <span id="actingBannerText">Viewing as Super Admin</span>
+      <button id="exitContextBtn" class="link-btn acting-banner-btn">Exit to Platform</button>
+    </div>
+
+    <div class="app-body">
     <aside class="sidebar">
       <div class="sidebar-header">
         <div class="brand-mini">Relay</div>
         <div class="org-name" id="orgNameLabel"></div>
 
-        <!-- Header organization switcher: "Rupesh / Acme India ▼" -->
+        <!-- Header organization switcher: "Rupesh / Acme India ▼" (tenant users only) -->
         <div class="bu-switcher" id="buSwitcher">
           <button id="buSwitcherBtn" class="bu-switcher-btn hidden">
             <span id="buSwitcherLabel">—</span> <span class="bu-caret">▾</span>
           </button>
           <div id="buSwitcherMenu" class="bu-switcher-menu hidden"></div>
         </div>
+
+        <!-- Super Admin only: jump to the account-switching page -->
+        <button id="switchOrgBtn" class="switch-org-btn hidden" title="Switch which organization's data you're viewing">
+          🔁 Switch Account
+        </button>
       </div>
 
       <nav class="sidebar-nav">
-        <button class="nav-item active" data-view="chat">💬 Chat</button>
+        <button class="nav-item" data-view="dashboard">🏠 Dashboard</button>
+        <button class="nav-item" data-view="permissions">🔐 Permissions</button>
+        <button class="nav-item" data-view="analytics">📊 Analytics</button>
+        <button class="nav-item" data-view="task">✅ Task</button>
+        <button class="nav-item" data-view="activities">🕒 Activities</button>
         <button class="nav-item" data-view="crm">📇 CRM</button>
+        <button class="nav-item" data-view="products">📦 Products</button>
+        <button class="nav-item" data-view="quotes">🧾 Quotes</button>
+        <button class="nav-item" data-view="orders">🛒 Orders</button>
+        <button class="nav-item" data-view="automations">⚡ Automations</button>
+        <button class="nav-item" data-view="chat">💬 Chat</button>
         <button class="nav-item" data-view="users">🧑‍🤝‍🧑 Team</button>
+        <button class="nav-item" data-view="settings">⚙️ Settings</button>
       </nav>
 
       <div class="sidebar-footer">
@@ -129,8 +174,60 @@
       </div>
     </aside>
 
-    <!-- ---------------- CHAT VIEW (default) ---------------- -->
-    <main class="view" id="view-chat">
+    <!-- ---------------- DASHBOARD VIEW (new default landing view) ---------------- -->
+    <main class="view hidden" id="view-dashboard">
+      <div class="dash-grid">
+        <div class="dash-card">
+          <div class="dash-card-label">Welcome</div>
+          <div class="dash-card-value" id="dashWelcomeName">—</div>
+          <div class="dash-card-sub" id="dashWelcomeSub">—</div>
+        </div>
+        <div class="dash-card">
+          <div class="dash-card-label">Conversations</div>
+          <div class="dash-card-value" id="dashConvCount">0</div>
+          <div class="dash-card-sub">open in Chat</div>
+        </div>
+        <div class="dash-card">
+          <div class="dash-card-label">Teammates</div>
+          <div class="dash-card-value" id="dashTeamCount">—</div>
+          <div class="dash-card-sub">in this organization</div>
+        </div>
+        <div class="dash-card">
+          <div class="dash-card-label">Role</div>
+          <div class="dash-card-value" id="dashRoleValue">—</div>
+          <div class="dash-card-sub">your access level</div>
+        </div>
+      </div>
+      <div class="stub" style="margin-top:24px;">More dashboard widgets (deal pipeline, activity feed, quick actions) — coming in the next build phase.</div>
+    </main>
+
+    <!-- ---------------- PERMISSIONS VIEW (roles + permission catalog) ---------------- -->
+    <main class="view hidden" id="view-permissions" style="flex-direction:column;overflow:auto;">
+      <div class="chat-list-header" style="border-right:none;">
+        <h2>Permissions</h2>
+        <button id="createRoleBtn" class="icon-btn">＋ New role</button>
+      </div>
+      <div id="permissionsNoOrg" class="stub hidden">
+        You're viewing the platform level with no organization selected.
+        <br /><br />
+        <button id="permissionsSwitchPrompt" class="primary-btn" style="margin:0;display:inline-block;">🔁 Switch into an organization</button>
+      </div>
+      <div id="permissionsError" class="error-msg" style="padding:0 16px;"></div>
+      <div id="permissionsBody" class="permissions-body"></div>
+    </main>
+
+    <!-- ---------------- Simple stub views for modules not yet built out ---------------- -->
+    <main class="view hidden" id="view-analytics"><div class="stub">Analytics — coming in the next build phase.</div></main>
+    <main class="view hidden" id="view-task"><div class="stub">Task management — coming in the next build phase.</div></main>
+    <main class="view hidden" id="view-activities"><div class="stub">Activities feed — coming in the next build phase.</div></main>
+    <main class="view hidden" id="view-products"><div class="stub">Products catalog — coming in the next build phase.</div></main>
+    <main class="view hidden" id="view-quotes"><div class="stub">Quotes — coming in the next build phase.</div></main>
+    <main class="view hidden" id="view-orders"><div class="stub">Orders — coming in the next build phase.</div></main>
+    <main class="view hidden" id="view-automations"><div class="stub">Automations — coming in the next build phase.</div></main>
+    <main class="view hidden" id="view-settings"><div class="stub">Settings — coming in the next build phase.</div></main>
+
+    <!-- ---------------- CHAT VIEW ---------------- -->
+    <main class="view hidden" id="view-chat">
       <section class="chat-list">
         <div class="chat-list-header">
           <h2>Conversations</h2>
@@ -153,7 +250,6 @@
       </section>
     </main>
 
-    <!-- ---------------- Simple stub views for the other modules ---------------- -->
     <!-- ---------------- CRM VIEW (Contacts / Leads / Deals / Companies as sub-tabs) ---------------- -->
     <main class="view hidden" id="view-crm" style="flex-direction:column;">
       <div class="chat-list-header" style="border-right:none;">
@@ -167,6 +263,7 @@
       <div class="crm-subview hidden" id="crm-subview-deals"><div class="stub">Deals CRM view — coming in the next build phase.</div></div>
       <div class="crm-subview hidden" id="crm-subview-companies"><div class="stub">Companies CRM view — coming in the next build phase.</div></div>
     </main>
+
     <main class="view hidden" id="view-users">
       <section class="chat-list" style="width:100%;border-right:none;">
         <div class="chat-list-header">
@@ -177,6 +274,7 @@
         <div id="teamList" class="conversation-list"></div>
       </section>
     </main>
+    </div>
   </div>
 
   <!-- Modals -->
