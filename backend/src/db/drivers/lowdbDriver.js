@@ -13,6 +13,8 @@ const COLLECTIONS = [
   'sharedOrganizations', 'sharedResourceGrants',
   'contacts', 'companies', 'leads', 'deals', 'tags',
   'groups', 'groupMembers', 'conversations', 'messages',
+  // --- Enterprise multi-tenant org-switching (additive; see businessUnitService.js) ---
+  'businessUnits', 'businessUnitMemberships',
 ];
 
 const defaults = {};
