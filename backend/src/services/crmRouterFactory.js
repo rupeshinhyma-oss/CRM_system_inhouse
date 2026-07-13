@@ -2,7 +2,7 @@ const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 const repo = require('../db');
 const { nowIso } = require('../utils/time');
-const { requireAuth, requirePermission, belongsToSameOrg, getEffectivePermissions } = require('../middleware/authGuards');
+const { requireAuth, requirePermission, belongsToSameOrg, belongsToSameBusinessUnit, getEffectivePermissions } = require('../middleware/authGuards');
 const { recordAudit } = require('../middleware/auditLog');
 const { notify } = require('./notificationService');
 const { ok, created, fail, noContent, paginate } = require('../utils/respond');
@@ -19,16 +19,27 @@ function createCrmRouter({ collection, permPrefix, fields, searchable, defaults 
   const router = express.Router();
   const perm = (action) => `${permPrefix}.${action}`;
 
+  // Business-unit isolation ("organization switching" — see businessUnitService.js):
+  // a record with no businessUnitId at all is a legacy/pre-migration record and
+  // stays visible org-wide (documented backward-compat allowance, not a gap —
+  // see belongsToSameBusinessUnit). Once backfilled, every record carries one
+  // and this filter becomes a strict per-business-unit boundary.
+  function withinActiveBusinessUnit(r, req) {
+    if (req.user.isSuperAdmin) return true;
+    if (!r.businessUnitId) return true;
+    return r.businessUnitId === req.user.buId;
+  }
+
   async function scoped(req) {
     const all = await repo.list(collection, { orgId: req.user.orgId });
-    return all.filter((r) => !r.deletedAt);
+    return all.filter((r) => !r.deletedAt && withinActiveBusinessUnit(r, req));
   }
 
   // GET /?search=&page=&pageSize=&sortBy=&sortDir=&assignedTo=&includeDeleted=
   router.get('/', requireAuth, requirePermission(perm('view')), async (req, res) => {
     const { search, page, pageSize, sortBy, sortDir, assignedTo, includeDeleted } = req.query;
     let records = includeDeleted === 'true'
-      ? await repo.list(collection, { orgId: req.user.orgId })
+      ? (await repo.list(collection, { orgId: req.user.orgId })).filter((r) => withinActiveBusinessUnit(r, req))
       : await scoped(req);
 
     if (search) {
@@ -49,7 +60,9 @@ function createCrmRouter({ collection, permPrefix, fields, searchable, defaults 
   // GET /:id
   router.get('/:id', requireAuth, requirePermission(perm('view')), async (req, res) => {
     const record = await repo.findById(collection, req.params.id);
-    if (!record || !belongsToSameOrg(req, record.orgId)) return fail(res, 404, 'Record not found');
+    if (!record || !belongsToSameOrg(req, record.orgId) || !belongsToSameBusinessUnit(req, record.businessUnitId)) {
+      return fail(res, 404, 'Record not found');
+    }
     ok(res, record);
   });
 
@@ -61,6 +74,7 @@ function createCrmRouter({ collection, permPrefix, fields, searchable, defaults 
     const record = await repo.insert(collection, {
       id: uuidv4(),
       orgId: req.user.orgId,
+      businessUnitId: req.user.buId || null,
       ...defaults,
       ...body,
       tags: body.tags || [],
@@ -77,7 +91,9 @@ function createCrmRouter({ collection, permPrefix, fields, searchable, defaults 
   // PATCH /:id
   router.patch('/:id', requireAuth, requirePermission(perm('edit')), async (req, res) => {
     const record = await repo.findById(collection, req.params.id);
-    if (!record || !belongsToSameOrg(req, record.orgId)) return fail(res, 404, 'Record not found');
+    if (!record || !belongsToSameOrg(req, record.orgId) || !belongsToSameBusinessUnit(req, record.businessUnitId)) {
+      return fail(res, 404, 'Record not found');
+    }
 
     const updates = {};
     for (const f of fields) if (f in req.body) updates[f] = req.body[f];
@@ -93,7 +109,9 @@ function createCrmRouter({ collection, permPrefix, fields, searchable, defaults 
   // DELETE /:id — soft delete
   router.delete('/:id', requireAuth, requirePermission(perm('delete')), async (req, res) => {
     const record = await repo.findById(collection, req.params.id);
-    if (!record || !belongsToSameOrg(req, record.orgId)) return fail(res, 404, 'Record not found');
+    if (!record || !belongsToSameOrg(req, record.orgId) || !belongsToSameBusinessUnit(req, record.businessUnitId)) {
+      return fail(res, 404, 'Record not found');
+    }
     await repo.updateById(collection, record.id, { deletedAt: nowIso(), updatedBy: req.user.uid });
     await recordAudit(req, { action: `${permPrefix}.delete`, entityType: permPrefix, entityId: record.id });
     noContent(res);
@@ -102,7 +120,9 @@ function createCrmRouter({ collection, permPrefix, fields, searchable, defaults 
   // POST /:id/restore — requires the generic crm.restore permission
   router.post('/:id/restore', requireAuth, requirePermission('crm.restore'), async (req, res) => {
     const record = await repo.findById(collection, req.params.id);
-    if (!record || !belongsToSameOrg(req, record.orgId)) return fail(res, 404, 'Record not found');
+    if (!record || !belongsToSameOrg(req, record.orgId) || !belongsToSameBusinessUnit(req, record.businessUnitId)) {
+      return fail(res, 404, 'Record not found');
+    }
     const updated = await repo.updateById(collection, record.id, { deletedAt: null });
     await recordAudit(req, { action: `${permPrefix}.restore`, entityType: permPrefix, entityId: record.id });
     ok(res, updated);
@@ -112,7 +132,9 @@ function createCrmRouter({ collection, permPrefix, fields, searchable, defaults 
   router.post('/:id/assign', requireAuth, requirePermission('crm.assign'), async (req, res) => {
     const { userId } = req.body || {};
     const record = await repo.findById(collection, req.params.id);
-    if (!record || !belongsToSameOrg(req, record.orgId)) return fail(res, 404, 'Record not found');
+    if (!record || !belongsToSameOrg(req, record.orgId) || !belongsToSameBusinessUnit(req, record.businessUnitId)) {
+      return fail(res, 404, 'Record not found');
+    }
     const oldValue = { assignedUserId: record.assignedUserId };
     const updated = await repo.updateById(collection, record.id, { assignedUserId: userId, updatedAt: nowIso() });
     await recordAudit(req, { action: `${permPrefix}.assign`, entityType: permPrefix, entityId: record.id, oldValue, newValue: { assignedUserId: userId } });
@@ -140,7 +162,7 @@ function createCrmRouter({ collection, permPrefix, fields, searchable, defaults 
     let affected = 0;
     for (const id of ids) {
       const record = await repo.findById(collection, id);
-      if (!record || !belongsToSameOrg(req, record.orgId)) continue;
+      if (!record || !belongsToSameOrg(req, record.orgId) || !belongsToSameBusinessUnit(req, record.businessUnitId)) continue;
       if (action === 'delete') {
         await repo.updateById(collection, id, { deletedAt: nowIso() });
       } else {
