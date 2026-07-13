@@ -365,12 +365,11 @@ switchOrgBtn.addEventListener('click', () => openOrgSwitchPage());
 document.getElementById('orgSwitchBackBtn').addEventListener('click', () => closeOrgSwitchPage());
 
 // ------------------------- Super Admin — Add Account (create + auto-switch) -------------------------
-// Creates a brand-new tenant organization (with its own owner user) via the existing
-// POST /organizations endpoint, then immediately switches the Super Admin's context into
-// it via the existing POST /organizations/:id/switch-context — same call the "Switch →"
-// list items use. New orgs are created with a fresh id, so they start with zero
-// conversations/groups/CRM records/users other than the owner: fully isolated from
-// every other tenant by construction (every backend route filters by orgId).
+// Creates a brand-new tenant organization UNDER THE CURRENT IDENTITY (same
+// login as whoever is already authenticated — no separate owner email or
+// password anymore; see backend routes/v1/organizations.js POST /). Then
+// immediately switches context into it using the accessToken/refreshToken
+// the create call already returns.
 
 const orgAddModal = document.getElementById('orgAddModal');
 const orgAddForm = document.getElementById('orgAddForm');
@@ -390,32 +389,23 @@ orgAddForm.addEventListener('submit', async (e) => {
   errEl.textContent = '';
 
   const orgName = document.getElementById('orgAddOrgName').value.trim();
-  const ownerDisplayName = document.getElementById('orgAddOwnerName').value.trim();
-  const ownerEmail = document.getElementById('orgAddOwnerEmail').value.trim();
-  const ownerPassword = document.getElementById('orgAddOwnerPassword').value;
 
-  if (!orgName || !ownerDisplayName || !ownerEmail || !ownerPassword) {
-    errEl.textContent = 'All fields are required.';
-    return;
-  }
-  if (ownerPassword.length < 8) {
-    errEl.textContent = 'Password must be at least 8 characters.';
+  if (!orgName) {
+    errEl.textContent = 'Organization name is required.';
     return;
   }
 
   submitBtn.disabled = true;
   submitBtn.textContent = 'Creating…';
   try {
-    // 1) Create the new isolated organization + its owner user.
-    const { data: newOrg } = await api('/organizations', {
+    // Creates the new isolated organization under the CURRENT identity and
+    // immediately returns tokens already scoped into it — no separate
+    // switch-context call needed (see routes/v1/organizations.js POST /).
+    const { data } = await api('/organizations', {
       method: 'POST',
-      body: { orgName, ownerDisplayName, ownerEmail, ownerPassword },
+      body: { orgName },
     });
-
-    // 2) Immediately switch the Super Admin's context into the freshly created org
-    //    — same mechanism as clicking an existing org in the list.
-    const { data: switched } = await api(`/organizations/${newOrg.id}/switch-context`, { method: 'POST' });
-    setTokens(switched.accessToken, switched.refreshToken);
+    setTokens(data.accessToken, data.refreshToken);
 
     orgAddModal.classList.add('hidden');
     orgSwitchScreen.classList.add('hidden');
