@@ -11,10 +11,26 @@ if (!JWT_SECRET) {
 const ACCESS_TOKEN_TTL = '15m';
 const REFRESH_TOKEN_TTL_DAYS = 30;
 
-/** Signs a short-lived JWT access token for a user. */
+/**
+ * Signs a short-lived JWT access token for a user.
+ *
+ * `buId` (active Business Unit id) is additive to the original payload shape —
+ * it carries the user's *organization context* in the JioHotstar-style
+ * switching sense (see services/businessUnitService.js). It is null for the
+ * platform Super Admin and for tenants that predate this feature until they
+ * are migrated (see db/migrations/2026_07_add_business_units.js). Nothing
+ * about `uid` ever changes on a switch — same user, same session, only the
+ * active-context claim differs.
+ */
 function signAccessToken(user) {
   return jwt.sign(
-    { uid: user.id, orgId: user.orgId || null, isSuperAdmin: !!user.isSuperAdmin, roleId: user.roleId || null },
+    {
+      uid: user.id,
+      orgId: user.orgId || null,
+      buId: user.activeBusinessUnitId || null,
+      isSuperAdmin: !!user.isSuperAdmin,
+      roleId: user.roleId || null,
+    },
     JWT_SECRET,
     { expiresIn: ACCESS_TOKEN_TTL }
   );
