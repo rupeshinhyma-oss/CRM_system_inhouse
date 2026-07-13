@@ -1,18 +1,24 @@
 // FILE: backend/src/routes/v1/organizations.js
-// Replace the existing file at this path with this one.
-// CHANGE: adds two Super-Admin-only endpoints that power the new
-// "Switch Organization" page in the frontend:
-//   POST /api/v1/organizations/:id/switch-context  -> step into a tenant
-//   POST /api/v1/organizations/exit-context         -> step back out to the
-//                                                      platform-level view
-// Everything else in this file is unchanged from the original.
+// REWRITTEN for the Identity -> Membership -> Organization model.
+//
+// KEY CHANGE: POST / ("Add Account" / "+ Create Organization") no longer
+// takes an email/password at all. The caller is ALREADY an authenticated
+// Identity (that's what the Bearer token proves) — creating another
+// organization just adds a new membership under that same identity, same
+// as Slack's "Create a workspace." See services/identityService.js.
+//
+// switch-context / exit-context are kept as thin backward-compatible
+// wrappers around the new /auth/switch-organization (which works for any
+// identity, not just Super Admin) — so any existing frontend code hitting
+// these URLs keeps working while it's migrated over.
 
 const express = require('express');
 const repo = require('../../db');
 const { nowIso } = require('../../utils/time');
 const { requireAuth, requireSuperAdmin, belongsToSameOrg } = require('../../middleware/authGuards');
-const { createOrganizationWithOwner, listOrganizations, setOrganizationStatus, deleteOrganization } = require('../../services/organizationService');
-const { signAccessToken, issueRefreshToken } = require('../../middleware/tokens');
+const identityService = require('../../services/identityService');
+const { listOrganizations, setOrganizationStatus, deleteOrganization } = require('../../services/organizationService');
+const { signAccessToken, issueRefreshTokenWithOrg } = require('../../middleware/tokens');
 const { recordAudit } = require('../../middleware/auditLog');
 const { ok, created, fail, noContent } = require('../../utils/respond');
 
@@ -22,15 +28,28 @@ router.get('/', requireAuth, requireSuperAdmin, async (req, res) => {
   ok(res, await listOrganizations());
 });
 
-router.post('/', requireAuth, requireSuperAdmin, async (req, res) => {
-  const { orgName, ownerEmail, ownerPassword, ownerDisplayName, industry, country } = req.body || {};
-  if (!orgName || !ownerEmail || !ownerPassword || !ownerDisplayName) {
-    return fail(res, 400, 'orgName, ownerEmail, ownerPassword and ownerDisplayName are required');
-  }
+// POST /api/v1/organizations  { orgName, industry?, country? }
+// "+ Create Organization" — NO email/password. Adds a new organization
+// (and membership) under the ALREADY AUTHENTICATED identity making this
+// call. Any identity can do this, not just Super Admin — creating your
+// second, third, tenth organization works the same way for everyone.
+router.post('/', requireAuth, async (req, res) => {
+  const { orgName, industry, country } = req.body || {};
+  if (!orgName) return fail(res, 400, 'orgName is required');
+
   try {
-    const result = await createOrganizationWithOwner({ orgName, ownerEmail, ownerPassword, ownerDisplayName, industry, country });
+    const identity = await repo.findById('identities', req.user.identityId);
+    if (!identity) return fail(res, 404, 'Identity not found');
+
+    const result = await identityService.createOrganizationForIdentity(identity, { orgName, industry, country });
     await recordAudit(req, { action: 'organization.create', entityType: 'organization', entityId: result.organization.id, newValue: result.organization });
-    created(res, result.organization);
+
+    // Immediately switch the caller's active context into the freshly
+    // created org, same as before — just via the new token model.
+    const accessToken = await signAccessToken(identity, { activeOrgId: result.organization.id });
+    const refreshToken = await issueRefreshTokenWithOrg(identity, result.organization.id, { ip: req.ip, userAgent: req.headers['user-agent'] });
+
+    created(res, { organization: result.organization, accessToken, refreshToken });
   } catch (err) {
     fail(res, err.status || 500, err.message);
   }
@@ -39,15 +58,15 @@ router.post('/', requireAuth, requireSuperAdmin, async (req, res) => {
 // ---------------------------------------------------------------------------
 // Super Admin account switching ("step into a tenant").
 //
-// The platform Super Admin has no orgId of their own, so every org-scoped
-// route (users, roles, contacts, deals, ...) filters to an empty result for
-// them. These two routes let a Super Admin choose which tenant's data they
-// want to view/manage, WITHOUT impersonating any individual user in that
-// tenant — they keep their own identity (uid never changes) and their
-// Super Admin privileges (isSuperAdmin stays true, so every permission
-// check still auto-passes). Only the effective `orgId` claim on their
-// token changes, by persisting `activeOrgId` on their own user record and
-// re-signing their tokens from it (see middleware/tokens.js).
+// The platform Super Admin has no organization membership at all, so every
+// org-scoped route (users, roles, contacts, deals, ...) filters to an empty
+// result for them by default. These two routes let a Super Admin choose
+// which tenant's data they want to view/manage, WITHOUT impersonating any
+// individual user in that tenant — they keep their own identity (identityId
+// never changes) and their Super Admin privileges (isSuperAdmin stays true,
+// so every permission check still auto-passes). Only the token's
+// `activeOrgId` claim changes — re-signed fresh each time (see
+// middleware/tokens.js) — no database writes to the identity itself.
 //
 // IMPORTANT: this must be defined BEFORE the generic `GET/PATCH/DELETE /:id`
 // routes below so Express doesn't treat "exit-context" as an :id.
@@ -59,9 +78,11 @@ router.post('/:id/switch-context', requireAuth, requireSuperAdmin, async (req, r
     if (!org) return fail(res, 404, 'Organization not found');
     if (org.status === 'DELETED') return fail(res, 400, 'This organization has been deleted');
 
-    const updatedUser = await repo.updateById('users', req.user.uid, { activeOrgId: org.id, updatedAt: nowIso() });
-    const accessToken = signAccessToken(updatedUser);
-    const refreshToken = await issueRefreshToken(updatedUser, { ip: req.ip, userAgent: req.headers['user-agent'] });
+    const identity = await repo.findById('identities', req.user.identityId);
+    if (!identity) return fail(res, 404, 'Identity not found');
+
+    const accessToken = await signAccessToken(identity, { activeOrgId: org.id });
+    const refreshToken = await issueRefreshTokenWithOrg(identity, org.id, { ip: req.ip, userAgent: req.headers['user-agent'] });
 
     await recordAudit(req, {
       action: 'superadmin.switch_context',
@@ -78,9 +99,11 @@ router.post('/:id/switch-context', requireAuth, requireSuperAdmin, async (req, r
 
 router.post('/exit-context', requireAuth, requireSuperAdmin, async (req, res) => {
   try {
-    const updatedUser = await repo.updateById('users', req.user.uid, { activeOrgId: null, updatedAt: nowIso() });
-    const accessToken = signAccessToken(updatedUser);
-    const refreshToken = await issueRefreshToken(updatedUser, { ip: req.ip, userAgent: req.headers['user-agent'] });
+    const identity = await repo.findById('identities', req.user.identityId);
+    if (!identity) return fail(res, 404, 'Identity not found');
+
+    const accessToken = await signAccessToken(identity, { activeOrgId: null });
+    const refreshToken = await issueRefreshTokenWithOrg(identity, null, { ip: req.ip, userAgent: req.headers['user-agent'] });
 
     await recordAudit(req, { action: 'superadmin.exit_context', entityType: 'organization', entityId: null });
 
