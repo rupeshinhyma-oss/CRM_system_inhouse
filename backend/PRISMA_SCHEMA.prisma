@@ -46,8 +46,45 @@ model Organization {
   groups            Group[]
   auditLogs         AuditLog[]
   notifications     Notification[]
+  businessUnits     BusinessUnit[]
 
   @@index([status])
+}
+
+// --- Organization switching (Tenant -> BusinessUnit -> Users) ---
+// This Organization model is the platform's TENANT (unrenamed for backward
+// compatibility with every existing orgId-keyed record and API). BusinessUnit
+// is the new sub-level a user actually switches between, JioHotstar/Netflix
+// profile-picker style — see backend/src/services/businessUnitService.js.
+model BusinessUnit {
+  id           String    @id @default(uuid())
+  organization Organization @relation(fields: [orgId], references: [id])
+  orgId        String
+  name         String
+  code         String?
+  logo         String?
+  description  String?
+  status       String    @default("ACTIVE") // ACTIVE | ARCHIVED | DELETED
+  isDefault    Boolean   @default(false)
+  settings     Json      @default("{}")
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  memberships  BusinessUnitMembership[]
+
+  @@index([orgId, status])
+}
+
+model BusinessUnitMembership {
+  id             String   @id @default(uuid())
+  businessUnit   BusinessUnit @relation(fields: [businessUnitId], references: [id])
+  businessUnitId String
+  userId         String
+  roleId         String?
+  status         String   @default("ACTIVE") // ACTIVE | DISABLED
+  createdAt      DateTime @default(now())
+
+  @@unique([businessUnitId, userId])
 }
 
 model User {
@@ -68,6 +105,7 @@ model User {
   isSuperAdmin      Boolean   @default(false)
   roleId            String?
   role              Role?     @relation(fields: [roleId], references: [id])
+  activeBusinessUnitId String? // current "organization" context — see BusinessUnit
   status            String    @default("OFFLINE")
   enabled           Boolean   @default(true)
   lastLoginAt       DateTime?
@@ -143,6 +181,7 @@ model AuditLog {
   id         String   @id @default(uuid())
   organization Organization? @relation(fields: [orgId], references: [id])
   orgId      String?
+  businessUnitId    String?   // set by the org-switching backfill migration; null = legacy pre-migration record
   userId     String?
   action     String
   entityType String
@@ -161,6 +200,7 @@ model Notification {
   id        String   @id @default(uuid())
   organization Organization? @relation(fields: [orgId], references: [id])
   orgId     String?
+  businessUnitId    String?   // set by the org-switching backfill migration; null = legacy pre-migration record
   userId    String
   type      String
   title     String
@@ -201,6 +241,7 @@ model Contact {
   id            String   @id @default(uuid())
   organization  Organization @relation(fields: [orgId], references: [id])
   orgId         String
+  businessUnitId    String?   // set by the org-switching backfill migration; null = legacy pre-migration record
   name          String
   email         String?
   phone         String?
@@ -226,6 +267,7 @@ model Company {
   id            String   @id @default(uuid())
   organization  Organization @relation(fields: [orgId], references: [id])
   orgId         String
+  businessUnitId    String?   // set by the org-switching backfill migration; null = legacy pre-migration record
   name          String
   industry      String?
   website       String?
@@ -249,6 +291,7 @@ model Lead {
   id                  String   @id @default(uuid())
   organization        Organization @relation(fields: [orgId], references: [id])
   orgId               String
+  businessUnitId    String?   // set by the org-switching backfill migration; null = legacy pre-migration record
   name                String
   email               String?
   phone               String?
@@ -274,6 +317,7 @@ model Deal {
   id               String   @id @default(uuid())
   organization     Organization @relation(fields: [orgId], references: [id])
   orgId            String
+  businessUnitId    String?   // set by the org-switching backfill migration; null = legacy pre-migration record
   name             String
   pipeline         String   @default("DEFAULT")
   stage            String   @default("NEW")
@@ -303,6 +347,7 @@ model Group {
   id           String   @id @default(uuid())
   organization Organization @relation(fields: [orgId], references: [id])
   orgId        String
+  businessUnitId    String?   // set by the org-switching backfill migration; null = legacy pre-migration record
   name         String
   description  String?
   avatarUrl    String?
