@@ -1,5 +1,4 @@
 const express = require('express');
-const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 const repo = require('../../db');
@@ -7,6 +6,7 @@ const { nowIso } = require('../../utils/time');
 const { requireAuth, requirePermission, belongsToSameOrg } = require('../../middleware/authGuards');
 const { recordAudit } = require('../../middleware/auditLog');
 const { ensureDefaultBusinessUnit, addMembership } = require('../../services/businessUnitService');
+const identityService = require('../../services/identityService');
 const { ok, created, fail, paginate } = require('../../utils/respond');
 
 const router = express.Router();
@@ -32,13 +32,32 @@ router.get('/', requireAuth, requirePermission('user.view'), async (req, res) =>
   ok(res, items.map(publicUser), meta);
 });
 
+// POST /api/v1/users/invite  { email, displayName, password?, roleId?, departmentId? }
+// Invites a new teammate into THIS organization. Under the Identity model:
+//   - If `email` already has an Identity (they're already a user of this
+//     platform in some other org, or already invited elsewhere), we reuse
+//     that identity and just add a new membership + profile — no new
+//     password is created or needed, same as adding yourself to a new
+//     Slack workspace you were invited to.
+//   - If `email` is brand new, we create a fresh Identity for them (with
+//     the admin-provided or auto-generated password) AND their membership +
+//     profile in this org, in one step.
 router.post('/invite', requireAuth, requirePermission('user.create'), async (req, res) => {
   const { email, displayName, password, roleId, departmentId } = req.body || {};
   if (!email || !displayName) return fail(res, 400, 'email and displayName are required');
   if (password && password.length < 8) return fail(res, 400, 'Password must be at least 8 characters');
 
   const emailLower = email.toLowerCase().trim();
-  if (await repo.findOne('users', { email: emailLower })) return fail(res, 409, 'An account with this email already exists');
+
+  let identity = await identityService.findIdentityByEmail(emailLower);
+  let temporaryPassword;
+  if (identity) {
+    const alreadyMember = await identityService.getMembership(identity.id, req.user.orgId);
+    if (alreadyMember) return fail(res, 409, 'This person is already a member of your organization');
+  } else {
+    temporaryPassword = password || crypto.randomBytes(9).toString('base64url');
+    identity = await identityService.createIdentity({ email: emailLower, password: temporaryPassword, displayName });
+  }
 
   // roleId is optional — the inviting admin can assign a role later from the
   // Team page. If omitted, fall back to this org's default "Employee" role
@@ -53,16 +72,13 @@ router.post('/invite', requireAuth, requirePermission('user.create'), async (req
     resolvedRoleId = defaultRole ? defaultRole.id : null;
   }
 
-  // If the admin sets a password themselves (to hand off personally), use it.
-  // Otherwise fall back to auto-generating one, same as before.
-  const finalPassword = password || crypto.randomBytes(9).toString('base64url');
   const employeeCount = await repo.count('users', { orgId: req.user.orgId });
 
   const user = await repo.insert('users', {
     id: uuidv4(),
+    identityId: identity.id,
     orgId: req.user.orgId,
     email: emailLower,
-    passwordHash: bcrypt.hashSync(finalPassword, 10),
     displayName,
     avatarUrl: null,
     designation: null,
@@ -81,6 +97,20 @@ router.post('/invite', requireAuth, requirePermission('user.create'), async (req
     createdAt: nowIso(),
     updatedAt: nowIso(),
   });
+
+  await repo.insert('organizationMembers', {
+    id: uuidv4(),
+    identityId: identity.id,
+    organizationId: req.user.orgId,
+    userProfileId: user.id,
+    role: 'member',
+    status: 'ACTIVE',
+    createdAt: nowIso(),
+  });
+
+  if (!identity.defaultOrganizationId) {
+    await repo.updateById('identities', identity.id, { defaultOrganizationId: req.user.orgId, updatedAt: nowIso() });
+  }
 
   // New teammates start in whichever business unit the inviting admin is
   // currently working in (falls back to the org's Default unit if the
@@ -114,7 +144,8 @@ router.post('/invite', requireAuth, requirePermission('user.create'), async (req
 
   // Production: email the password via a secure invite link instead of returning it in the API response.
   // For now the admin shares it with the invitee personally, as requested.
-  created(res, { user: publicUser(user), temporaryPassword: password ? undefined : finalPassword });
+  // (temporaryPassword is undefined if this identity already existed — no new password was created.)
+  created(res, { user: publicUser(user), temporaryPassword });
 });
 
 router.get('/:id', requireAuth, requirePermission('user.view'), async (req, res) => {
