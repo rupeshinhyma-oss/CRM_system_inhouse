@@ -2,7 +2,7 @@ const { v4: uuidv4 } = require('uuid');
 const { createCrmRouter } = require('../../services/crmRouterFactory');
 const repo = require('../../db');
 const { nowIso } = require('../../utils/time');
-const { requireAuth, requirePermission, belongsToSameOrg } = require('../../middleware/authGuards');
+const { requireAuth, requirePermission, belongsToSameOrg, belongsToSameBusinessUnit } = require('../../middleware/authGuards');
 const { recordAudit } = require('../../middleware/auditLog');
 const { ok, fail } = require('../../utils/respond');
 
@@ -20,17 +20,21 @@ const router = createCrmRouter({
 // POST /api/v1/leads/:id/convert — requires lead.convert, creates a Deal + Contact from the lead
 router.post('/:id/convert', requireAuth, requirePermission('lead.convert'), async (req, res) => {
   const lead = await repo.findById('leads', req.params.id);
-  if (!lead || !belongsToSameOrg(req, lead.orgId)) return fail(res, 404, 'Lead not found');
+  if (!lead || !belongsToSameOrg(req, lead.orgId) || !belongsToSameBusinessUnit(req, lead.businessUnitId)) {
+    return fail(res, 404, 'Lead not found');
+  }
 
   const contact = await repo.insert('contacts', {
-    id: uuidv4(), orgId: req.user.orgId, name: lead.name, email: lead.email, phone: lead.phone,
+    id: uuidv4(), orgId: req.user.orgId, businessUnitId: lead.businessUnitId || req.user.buId || null,
+    name: lead.name, email: lead.email, phone: lead.phone,
     designation: null, companyId: null, tags: lead.tags || [], notes: lead.notes || '',
     assignedUserId: lead.assignedUserId, createdBy: req.user.uid, updatedBy: req.user.uid,
     createdAt: nowIso(), updatedAt: nowIso(), deletedAt: null,
   });
 
   const deal = await repo.insert('deals', {
-    id: uuidv4(), orgId: req.user.orgId, name: `${lead.name} - Deal`, pipeline: 'DEFAULT', stage: 'NEW',
+    id: uuidv4(), orgId: req.user.orgId, businessUnitId: lead.businessUnitId || req.user.buId || null,
+    name: `${lead.name} - Deal`, pipeline: 'DEFAULT', stage: 'NEW',
     amount: 0, currency: 'USD', probability: 20, expectedCloseDate: null, assignedUserId: lead.assignedUserId,
     contactId: contact.id, tags: [], notes: '', createdBy: req.user.uid, updatedBy: req.user.uid,
     createdAt: nowIso(), updatedAt: nowIso(), deletedAt: null,
