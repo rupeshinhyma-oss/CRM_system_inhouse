@@ -1,3 +1,6 @@
+/* FILE: frontend/styles.css */
+/* Replace the existing file at this path with this one. */
+
 * { box-sizing: border-box; }
 body {
   margin: 0;
@@ -45,7 +48,10 @@ body {
 .error-msg { color: #f87171; font-size: 12px; min-height: 16px; margin-top: 8px; }
 
 /* ---------- App shell ---------- */
-.app-shell { display: flex; height: 100vh; }
+/* Now a column: [ acting-banner (optional) ][ app-body: sidebar + main views, row ] */
+.app-shell { display: flex; flex-direction: column; height: 100vh; }
+.app-body { flex: 1; display: flex; overflow: hidden; min-height: 0; }
+
 .sidebar {
   width: 220px; background: #12151b; border-right: 1px solid #232833;
   display: flex; flex-direction: column; flex-shrink: 0;
@@ -53,7 +59,7 @@ body {
 .sidebar-header { padding: 18px 16px; border-bottom: 1px solid #232833; }
 .brand-mini { font-weight: 700; color: #7dd3fc; font-size: 16px; }
 .org-name { font-size: 12px; color: #8b93a3; margin-top: 2px; }
-.sidebar-nav { flex: 1; padding: 12px 8px; display: flex; flex-direction: column; gap: 4px; }
+.sidebar-nav { flex: 1; padding: 12px 8px; display: flex; flex-direction: column; gap: 4px; overflow-y: auto; }
 .nav-item {
   text-align: left; padding: 10px 12px; border-radius: 8px; border: none;
   background: transparent; color: #b7bfcc; cursor: pointer; font-size: 14px;
@@ -67,8 +73,70 @@ body {
 
 .view { flex: 1; display: flex; overflow: hidden; }
 .stub {
-  margin: auto; color: #8b93a3; font-size: 15px;
+  margin: auto; color: #8b93a3; font-size: 15px; text-align: center; padding: 24px;
 }
+
+/* ---------- Super Admin: "Switch Account" button (sidebar header) ---------- */
+.switch-org-btn {
+  margin-top: 10px; width: 100%; display: flex; align-items: center; justify-content: center;
+  gap: 6px; background: #1f2735; border: 1px solid #35507a; color: #7dd3fc;
+  border-radius: 8px; padding: 8px 10px; font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.switch-org-btn:hover { background: #26314a; }
+
+/* ---------- Acting-as-tenant banner (Super Admin inside a switched org) ---------- */
+.acting-banner {
+  display: flex; align-items: center; justify-content: center; gap: 14px;
+  background: #3a2c12; border-bottom: 1px solid #6b4f1a; color: #fbd38d;
+  font-size: 12.5px; padding: 8px 16px; text-align: center; flex-shrink: 0;
+}
+.acting-banner-btn { color: #fbd38d; font-weight: 700; text-decoration: underline; }
+
+/* ---------- Super Admin: "Switch Organization" page ---------- */
+.org-switch-card { width: 480px; max-height: 80vh; display: flex; flex-direction: column; }
+.org-switch-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.org-switch-list { overflow-y: auto; max-height: 340px; display: flex; flex-direction: column; gap: 6px; }
+.org-switch-item {
+  display: flex; align-items: center; gap: 12px; padding: 10px; border-radius: 10px;
+  border: 1px solid #2a3140; background: #1a1f29; cursor: pointer;
+}
+.org-switch-item:hover { border-color: #7dd3fc; background: #1f2735; }
+.org-switch-avatar {
+  width: 38px; height: 38px; border-radius: 8px; background: #2a3140; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center; font-size: 15px; color: #7dd3fc; font-weight: 700;
+}
+.org-switch-meta { flex: 1; min-width: 0; }
+.org-switch-name { font-size: 14px; font-weight: 600; }
+.org-switch-sub { font-size: 11px; color: #8b93a3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.org-switch-go { padding: 6px 12px; font-size: 12px; flex-shrink: 0; }
+#orgSwitchSearch {
+  padding: 10px 12px; border-radius: 8px; border: 1px solid #2a3140;
+  background: #10141c; color: #e6e8eb; font-size: 14px; width: 100%;
+}
+#orgSwitchSearch:focus { outline: none; border-color: #7dd3fc; }
+
+/* ---------- Dashboard view ---------- */
+#view-dashboard { flex-direction: column; padding: 24px 28px; overflow-y: auto; }
+.dash-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; }
+.dash-card { background: #161a22; border: 1px solid #232833; border-radius: 12px; padding: 18px; }
+.dash-card-label { font-size: 12px; color: #8b93a3; text-transform: uppercase; letter-spacing: .04em; }
+.dash-card-value { font-size: 24px; font-weight: 700; margin-top: 6px; color: #e6e8eb; }
+.dash-card-sub { font-size: 12px; color: #8b93a3; margin-top: 4px; }
+
+/* ---------- Permissions view ---------- */
+#view-permissions { padding: 0; }
+.permissions-body { padding: 16px; display: flex; flex-direction: column; gap: 16px; overflow-y: auto; }
+.role-card { background: #161a22; border: 1px solid #232833; border-radius: 12px; padding: 16px; }
+.role-card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.role-card-title { font-size: 15px; font-weight: 700; }
+.role-card-key { font-size: 11px; color: #8b93a3; margin-top: 2px; }
+.role-badge {
+  font-size: 10px; color: #7dd3fc; border: 1px solid #35507a; border-radius: 999px;
+  padding: 1px 7px; margin-left: 6px; font-weight: 600; text-transform: uppercase;
+}
+.role-groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; }
+.role-group-title { font-size: 11px; color: #7dd3fc; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 6px; font-weight: 700; }
+.perm-check { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: #cbd3e0; padding: 3px 0; }
 
 /* ---------- Chat view ---------- */
 .chat-list {
@@ -134,7 +202,7 @@ body {
 .crm-subtab.active { background: #1f2735; color: #fff; border-color: #2a3140; }
 .crm-subview { flex: 1; display: flex; overflow: auto; }
 
-/* ---------- Workspace selector ("Who's working?" — organization switching) ---------- */
+/* ---------- Workspace selector ("Who's working?" — business unit switching) ---------- */
 .bu-select-card { width: 480px; text-align: center; }
 .bu-tile-grid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
