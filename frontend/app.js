@@ -75,11 +75,14 @@ function clearTokens() {
 
 const setupScreen = document.getElementById('setupScreen');
 const authScreen = document.getElementById('authScreen');
+const buSelectScreen = document.getElementById('buSelectScreen');
+const buCreateModal = document.getElementById('buCreateModal');
 const appShell = document.getElementById('appShell');
 
 function showScreen(name) {
   setupScreen.classList.toggle('hidden', name !== 'setup');
   authScreen.classList.toggle('hidden', name !== 'auth');
+  buSelectScreen.classList.toggle('hidden', name !== 'buSelect');
   appShell.classList.toggle('hidden', name !== 'app');
 }
 
@@ -93,7 +96,7 @@ document.getElementById('setupForm').addEventListener('submit', async (e) => {
     const password = document.getElementById('setupPassword').value;
     const { data } = await api('/setup/super-admin', { method: 'POST', body: { displayName, email, password } });
     setTokens(data.accessToken, data.refreshToken);
-    await enterApp();
+    await afterAuth();
   } catch (err) {
     errEl.textContent = err.message;
   }
@@ -118,7 +121,7 @@ document.getElementById('loginForm').addEventListener('submit', async (e) => {
     const password = document.getElementById('loginPassword').value;
     const { data } = await api('/auth/login', { method: 'POST', body: { email, password } });
     setTokens(data.accessToken, data.refreshToken);
-    await enterApp();
+    await afterAuth();
   } catch (err) {
     errEl.textContent = err.message;
   }
@@ -138,7 +141,7 @@ document.getElementById('registerForm').addEventListener('submit', async (e) => 
       body: { orgName, ownerDisplayName, ownerEmail, ownerPassword },
     });
     setTokens(data.accessToken, data.refreshToken);
-    await enterApp();
+    await afterAuth();
   } catch (err) {
     errEl.textContent = err.message;
   }
@@ -149,6 +152,125 @@ document.getElementById('logoutBtn').addEventListener('click', async () => {
   clearTokens();
   if (state.socket) state.socket.disconnect();
   location.reload();
+});
+
+// ------------------------- Entering the app: CHAT is always the landing view -------------------------
+
+// ------------------------- Organization switching ("Who's working?") -------------------------
+// Runs right after login/register/setup, BEFORE the main app shell. Not another login step —
+// the user is already authenticated; this only resolves which business unit (the JioHotstar-style
+// "organization") they land in. See backend/src/routes/v1/businessUnits.js.
+
+const buTileGrid = document.getElementById('buTileGrid');
+const buSelectError = document.getElementById('buSelectError');
+const buCreateBtn = document.getElementById('buCreateBtn');
+
+async function afterAuth() {
+  let units = [];
+  try {
+    const { data } = await api('/business-units');
+    units = data || [];
+  } catch {
+    // Super Admin (or any account with no tenant) has no business units — just proceed.
+    return enterApp();
+  }
+
+  if (units.length === 0) return enterApp(); // nothing to choose from yet (shouldn't normally happen post-signup)
+  if (units.length === 1) return selectBusinessUnit(units[0].id); // only one workspace — skip the picker entirely
+
+  renderBuTiles(units);
+  buCreateBtn.classList.remove('hidden');
+  showScreen('buSelect');
+}
+
+function renderBuTiles(units) {
+  buSelectError.textContent = '';
+  buTileGrid.innerHTML = units.map((u) => `
+    <button class="bu-tile" data-bu-id="${u.id}">
+      <div class="bu-tile-avatar">${escapeHtml((u.name || '?').slice(0, 1).toUpperCase())}</div>
+      ${escapeHtml(u.name)}
+    </button>
+  `).join('');
+  buTileGrid.querySelectorAll('.bu-tile').forEach((btn) => {
+    btn.addEventListener('click', () => selectBusinessUnit(btn.dataset.buId));
+  });
+}
+
+async function selectBusinessUnit(businessUnitId) {
+  try {
+    const { data } = await api('/business-units/switch', { method: 'POST', body: { businessUnitId } });
+    setTokens(data.accessToken, data.refreshToken);
+    await enterApp();
+  } catch (err) {
+    buSelectError.textContent = err.message;
+  }
+}
+
+document.getElementById('buCreateCancel').addEventListener('click', () => buCreateModal.classList.add('hidden'));
+buCreateBtn.addEventListener('click', () => buCreateModal.classList.remove('hidden'));
+
+document.getElementById('buCreateForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const errEl = document.getElementById('buCreateError');
+  errEl.textContent = '';
+  try {
+    const name = document.getElementById('buCreateName').value.trim();
+    const code = document.getElementById('buCreateCode').value.trim();
+    const { data: bu } = await api('/business-units', { method: 'POST', body: { name, code: code || undefined } });
+    buCreateModal.classList.add('hidden');
+    document.getElementById('buCreateForm').reset();
+    await selectBusinessUnit(bu.id); // jump straight into the new workspace
+  } catch (err) {
+    errEl.textContent = err.message;
+  }
+});
+
+// ------------------------- Header switcher: "Rupesh / Acme India ▾" -------------------------
+
+const buSwitcherBtn = document.getElementById('buSwitcherBtn');
+const buSwitcherMenu = document.getElementById('buSwitcherMenu');
+
+async function refreshBuSwitcher() {
+  let units = [];
+  try {
+    const { data } = await api('/business-units');
+    units = data || [];
+  } catch { /* Super Admin / no tenant — leave the switcher hidden */ }
+
+  if (units.length === 0) {
+    buSwitcherBtn.classList.add('hidden');
+    return;
+  }
+
+  const active = units.find((u) => u.active) || units[0];
+  document.getElementById('buSwitcherLabel').textContent = active.name;
+  buSwitcherBtn.classList.remove('hidden');
+
+  buSwitcherMenu.innerHTML = units.map((u) => `
+    <div class="bu-menu-item ${u.active ? 'active' : ''}" data-bu-id="${u.id}">
+      ${escapeHtml(u.name)} ${u.active ? '✓' : ''}
+    </div>
+  `).join('') + `
+    <div class="bu-menu-divider"></div>
+    <div class="bu-menu-item bu-menu-create" id="buSwitcherCreate">＋ Create workspace</div>
+  `;
+
+  buSwitcherMenu.querySelectorAll('.bu-menu-item[data-bu-id]').forEach((item) => {
+    item.addEventListener('click', async () => {
+      buSwitcherMenu.classList.add('hidden');
+      if (item.dataset.buId === active.id) return; // already there
+      await selectBusinessUnit(item.dataset.buId); // re-enters the app in the new context
+    });
+  });
+  document.getElementById('buSwitcherCreate').addEventListener('click', () => {
+    buSwitcherMenu.classList.add('hidden');
+    buCreateModal.classList.remove('hidden');
+  });
+}
+
+buSwitcherBtn.addEventListener('click', () => buSwitcherMenu.classList.toggle('hidden'));
+document.addEventListener('click', (e) => {
+  if (!document.getElementById('buSwitcher').contains(e.target)) buSwitcherMenu.classList.add('hidden');
 });
 
 // ------------------------- Entering the app: CHAT is always the landing view -------------------------
@@ -168,6 +290,7 @@ async function enterApp() {
       document.getElementById('orgNameLabel').textContent = org.name;
     } catch {}
   }
+  await refreshBuSwitcher();
 
   setActiveView('chat'); // <-- the whole point: chat is what a user sees immediately after login/signup
 
@@ -190,6 +313,7 @@ function setActiveView(view) {
 // ------------------------- Realtime (Socket.IO) -------------------------
 
 function connectSocket() {
+  if (state.socket) state.socket.disconnect(); // re-entering enterApp() after a workspace switch — avoid stacking connections
   state.socket = io(API_ORIGIN || window.location.origin, { auth: { token: state.accessToken } });
 
   state.socket.on('chat:message', (message) => {
