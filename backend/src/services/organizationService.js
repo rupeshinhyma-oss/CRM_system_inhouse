@@ -3,6 +3,7 @@ const bcrypt = require('bcryptjs');
 const repo = require('../db');
 const { nowIso } = require('../utils/time');
 const { seedDefaultRolesForOrg } = require('../db/seed');
+const { ensureDefaultBusinessUnit, addMembership } = require('./businessUnitService');
 
 /** Self-service signup: creates a brand-new Organization + its Owner user. */
 async function createOrganizationWithOwner({ orgName, ownerEmail, ownerPassword, ownerDisplayName, industry, country }) {
@@ -32,6 +33,12 @@ async function createOrganizationWithOwner({ orgName, ownerEmail, ownerPassword,
 
   const roles = await seedDefaultRolesForOrg(org.id);
 
+  // Every tenant gets a "Default" business unit on day one, so the
+  // JioHotstar-style org selector always has at least one working profile —
+  // additional business units (e.g. "Acme India" / "Acme UAE") are created
+  // later via POST /api/v1/business-units.
+  const defaultBusinessUnit = await ensureDefaultBusinessUnit(org.id);
+
   const owner = await repo.insert('users', {
     id: uuidv4(),
     orgId: org.id,
@@ -48,6 +55,7 @@ async function createOrganizationWithOwner({ orgName, ownerEmail, ownerPassword,
     language: 'en',
     isSuperAdmin: false,
     roleId: roles.ORG_OWNER.id,
+    activeBusinessUnitId: defaultBusinessUnit.id,
     status: 'OFFLINE',
     enabled: true,
     lastLoginAt: null,
@@ -55,7 +63,9 @@ async function createOrganizationWithOwner({ orgName, ownerEmail, ownerPassword,
     updatedAt: nowIso(),
   });
 
-  return { organization: org, owner, roles };
+  await addMembership(defaultBusinessUnit.id, owner.id, roles.ORG_OWNER.id, 'ACTIVE');
+
+  return { organization: org, owner, roles, defaultBusinessUnit };
 }
 
 async function listOrganizations() {
