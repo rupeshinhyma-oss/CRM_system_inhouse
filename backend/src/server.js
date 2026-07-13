@@ -41,7 +41,7 @@ app.use(cors({ origin: ALLOWED_ORIGINS, credentials: true }));
 app.use(express.json({ limit: '5mb' }));
 app.use(createRateLimiter({ windowMs: 60_000, max: 300 }));
 
-app.get('/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime(), dbDriver: process.env.DB_DRIVER || 'lowdb' }));
+app.get('/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime(), db: 'mongodb' }));
 
 app.use('/api/v1/setup', setupRoutes);
 app.use('/api/v1/auth', authRoutes);
@@ -85,5 +85,5 @@ registerSocketHandlers(io);
 
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => {
-  console.log(`Enterprise CRM+Chat backend listening on :${PORT} (DB_DRIVER=${process.env.DB_DRIVER || 'lowdb'})`);
+  console.log(`Enterprise CRM+Chat backend listening on :${PORT} (db=mongodb)`);
 });
