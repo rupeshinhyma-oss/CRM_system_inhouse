@@ -47,6 +47,22 @@ async function signAccessToken(identity, { activeOrgId } = {}) {
     if (membership) profile = await repo.findById('users', membership.userProfileId);
   }
 
+  // A Super Admin has NO organization membership by design (see
+  // services/identityService.js header + routes/v1/organizations.js
+  // switch-context) — they view/manage a tenant without being a member of
+  // it. So `profile` will always be null for them, even while
+  // activeOrgId correctly points at the tenant they've switched into.
+  // Every org-scoped route in this app (users.invite, roles.list, etc.)
+  // reads req.user.orgId — NOT req.user.activeOrgId — to know which
+  // tenant to operate on, so orgId must still resolve to resolvedOrgId
+  // for a Super Admin, or every action they take while "inside" a tenant
+  // silently operates on orgId: null instead of the tenant they're
+  // looking at (this was the bug behind invited teammates being created
+  // with no organizationId and being unable to log in).
+  const effectiveOrgId = profile ? profile.orgId : (identity.isSuperAdmin ? resolvedOrgId : null);
+  const effectiveBuId = profile ? (profile.activeBusinessUnitId || null) : null;
+  const effectiveRoleId = profile ? (profile.roleId || null) : null;
+
   return jwt.sign(
     {
       identityId: identity.id,
@@ -54,9 +70,9 @@ async function signAccessToken(identity, { activeOrgId } = {}) {
       // req.user.uid / req.user.orgId / req.user.buId / req.user.roleId)
       // keeps working with zero changes elsewhere in the codebase.
       uid: profile ? profile.id : null,
-      orgId: profile ? profile.orgId : null,
-      buId: profile ? profile.activeBusinessUnitId || null : null,
-      roleId: profile ? profile.roleId || null : null,
+      orgId: effectiveOrgId,
+      buId: effectiveBuId,
+      roleId: effectiveRoleId,
       isSuperAdmin: !!identity.isSuperAdmin,
       activeOrgId: resolvedOrgId,
     },
