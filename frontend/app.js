@@ -1,3 +1,5 @@
+// FILE: frontend/app.js
+// Replace the existing file at this path with this one.
 // ===================================================================
 // Relay frontend — API_ORIGIN below points at wherever the backend is
 // hosted. Leave it as '' if frontend+backend are served by the SAME app
@@ -16,7 +18,7 @@ const state = {
   socket: null,
   conversations: [],
   activeConversationId: null,
-  orgUsers: [], // cached for the "New DM" / "New group" pickers
+  orgUsers: [], // cached for the "New DM" / "New group" pickers — reset on every enterApp() so a Super Admin org switch never leaks the previous tenant's list
 };
 
 // ------------------------- API helper with auto-refresh -------------------------
@@ -78,12 +80,14 @@ const authScreen = document.getElementById('authScreen');
 const buSelectScreen = document.getElementById('buSelectScreen');
 const buCreateModal = document.getElementById('buCreateModal');
 const appShell = document.getElementById('appShell');
+const orgSwitchScreen = document.getElementById('orgSwitchScreen');
 
 function showScreen(name) {
   setupScreen.classList.toggle('hidden', name !== 'setup');
   authScreen.classList.toggle('hidden', name !== 'auth');
   buSelectScreen.classList.toggle('hidden', name !== 'buSelect');
   appShell.classList.toggle('hidden', name !== 'app');
+  if (name !== 'app') orgSwitchScreen.classList.add('hidden');
 }
 
 document.getElementById('setupForm').addEventListener('submit', async (e) => {
@@ -154,12 +158,12 @@ document.getElementById('logoutBtn').addEventListener('click', async () => {
   location.reload();
 });
 
-// ------------------------- Entering the app: CHAT is always the landing view -------------------------
-
 // ------------------------- Organization switching ("Who's working?") -------------------------
 // Runs right after login/register/setup, BEFORE the main app shell. Not another login step —
-// the user is already authenticated; this only resolves which business unit (the JioHotstar-style
-// "organization") they land in. See backend/src/routes/v1/businessUnits.js.
+// the user is already authenticated; this only resolves which BUSINESS UNIT (the JioHotstar-style
+// "workspace") they land in. This is distinct from the Super-Admin "Switch Account" page further
+// below, which switches which TENANT ORGANIZATION a Super Admin is viewing.
+// See backend/src/routes/v1/businessUnits.js.
 
 const buTileGrid = document.getElementById('buTileGrid');
 const buSelectError = document.getElementById('buSelectError');
@@ -225,7 +229,7 @@ document.getElementById('buCreateForm').addEventListener('submit', async (e) => 
   }
 });
 
-// ------------------------- Header switcher: "Rupesh / Acme India ▾" -------------------------
+// ------------------------- Header switcher: "Rupesh / Acme India ▾" (tenant users) -------------------------
 
 const buSwitcherBtn = document.getElementById('buSwitcherBtn');
 const buSwitcherMenu = document.getElementById('buSwitcherMenu');
@@ -273,29 +277,174 @@ document.addEventListener('click', (e) => {
   if (!document.getElementById('buSwitcher').contains(e.target)) buSwitcherMenu.classList.add('hidden');
 });
 
-// ------------------------- Entering the app: CHAT is always the landing view -------------------------
+// ------------------------- Super Admin — account switching page -------------------------
+// Only visible/reachable for me.isSuperAdmin. Lets a Super Admin step into any tenant's data
+// context (without impersonating any individual user in it) via POST /organizations/:id/switch-context,
+// and step back out via POST /organizations/exit-context. See backend/src/routes/v1/organizations.js.
+
+const switchOrgBtn = document.getElementById('switchOrgBtn');
+const actingBanner = document.getElementById('actingBanner');
+let orgSwitchCache = [];
+let lastViewBeforeSwitch = 'dashboard';
+
+async function openOrgSwitchPage({ push = true } = {}) {
+  lastViewBeforeSwitch = document.querySelector('.nav-item.active')?.dataset.view || 'dashboard';
+  appShell.classList.add('hidden');
+  orgSwitchScreen.classList.remove('hidden');
+  if (push && location.pathname !== '/accounts') history.pushState({ orgSwitch: true }, '', '/accounts');
+  document.title = 'Relay — Switch Organization';
+
+  const errEl = document.getElementById('orgSwitchError');
+  errEl.textContent = '';
+  document.getElementById('orgSwitchList').innerHTML = '<div class="stub">Loading organizations…</div>';
+  try {
+    const { data } = await api('/organizations');
+    orgSwitchCache = data || [];
+    renderOrgSwitchList(orgSwitchCache);
+  } catch (err) {
+    document.getElementById('orgSwitchList').innerHTML = '';
+    errEl.textContent = err.message;
+  }
+}
+
+function closeOrgSwitchPage({ push = true, restoreView = true } = {}) {
+  orgSwitchScreen.classList.add('hidden');
+  appShell.classList.remove('hidden');
+  const view = restoreView ? lastViewBeforeSwitch : (pathToView(location.pathname) || 'dashboard');
+  if (push) setActiveView(view);
+}
+
+function renderOrgSwitchList(orgs) {
+  const el = document.getElementById('orgSwitchList');
+  if (!orgs.length) {
+    el.innerHTML = '<div class="stub">No organizations yet.</div>';
+    return;
+  }
+  el.innerHTML = orgs.map((org) => `
+    <div class="org-switch-item" data-org-id="${org.id}">
+      <div class="org-switch-avatar">${escapeHtml((org.name || '?').slice(0, 1).toUpperCase())}</div>
+      <div class="org-switch-meta">
+        <div class="org-switch-name">${escapeHtml(org.name)}</div>
+        <div class="org-switch-sub">${escapeHtml(org.email || 'no contact email')} · ${escapeHtml(org.status || 'ACTIVE')}</div>
+      </div>
+      <button class="primary-btn org-switch-go" type="button" style="margin:0;">Switch →</button>
+    </div>
+  `).join('');
+  el.querySelectorAll('.org-switch-item').forEach((item) => {
+    item.addEventListener('click', () => selectOrganizationContext(item.dataset.orgId));
+  });
+}
+
+document.getElementById('orgSwitchSearch').addEventListener('input', (e) => {
+  const q = e.target.value.trim().toLowerCase();
+  renderOrgSwitchList(orgSwitchCache.filter((o) =>
+    o.name.toLowerCase().includes(q) || (o.email || '').toLowerCase().includes(q)));
+});
+
+async function selectOrganizationContext(orgId) {
+  const errEl = document.getElementById('orgSwitchError');
+  errEl.textContent = '';
+  try {
+    const { data } = await api(`/organizations/${orgId}/switch-context`, { method: 'POST' });
+    setTokens(data.accessToken, data.refreshToken);
+    orgSwitchScreen.classList.add('hidden');
+    appShell.classList.remove('hidden');
+    history.pushState({ view: 'dashboard' }, '', '/dashboard');
+    await enterApp();
+  } catch (err) {
+    errEl.textContent = err.message;
+  }
+}
+
+switchOrgBtn.addEventListener('click', () => openOrgSwitchPage());
+document.getElementById('orgSwitchBackBtn').addEventListener('click', () => closeOrgSwitchPage());
+
+document.getElementById('exitContextBtn').addEventListener('click', async () => {
+  try {
+    const { data } = await api('/organizations/exit-context', { method: 'POST' });
+    setTokens(data.accessToken, data.refreshToken);
+    history.pushState({ view: 'dashboard' }, '', '/dashboard');
+    await enterApp();
+  } catch (err) {
+    alert(err.message);
+  }
+});
+
+// ------------------------- URL routing (address bar reflects the open view) -------------------------
+
+const VIEW_ROUTES = {
+  dashboard: '/dashboard',
+  permissions: '/permissions',
+  analytics: '/analytics',
+  task: '/task',
+  activities: '/activities',
+  crm: '/crm',
+  products: '/products',
+  quotes: '/quotes',
+  orders: '/orders',
+  automations: '/automations',
+  chat: '/chat',
+  users: '/team',
+  settings: '/settings',
+};
+const PATH_TO_VIEW = Object.fromEntries(Object.entries(VIEW_ROUTES).map(([view, path]) => [path, view]));
+
+function pathToView(pathname) {
+  return PATH_TO_VIEW[pathname] || null;
+}
+
+window.addEventListener('popstate', (e) => {
+  if (appShell.classList.contains('hidden') && orgSwitchScreen.classList.contains('hidden')) return; // not logged in yet
+  if (location.pathname === '/accounts') { openOrgSwitchPage({ push: false }); return; }
+  if (!orgSwitchScreen.classList.contains('hidden')) { orgSwitchScreen.classList.add('hidden'); appShell.classList.remove('hidden'); }
+  const view = (e.state && e.state.view) || pathToView(location.pathname) || 'dashboard';
+  setActiveView(view, { push: false });
+});
+
+// ------------------------- Entering the app -------------------------
 
 async function enterApp() {
   const { data: me } = await api('/auth/me');
   state.me = me;
+  state.orgUsers = []; // never carry a cached user list across a Super Admin org switch
 
   showScreen('app');
 
   document.getElementById('meName').textContent = me.displayName;
   document.getElementById('meEmail').textContent = me.email;
   document.getElementById('orgNameLabel').textContent = me.isSuperAdmin ? 'Super Admin' : '';
+
+  let orgName = null;
   if (me.orgId) {
     try {
       const { data: org } = await api(`/organizations/${me.orgId}`);
-      document.getElementById('orgNameLabel').textContent = org.name;
+      orgName = org.name;
+      document.getElementById('orgNameLabel').textContent = me.isSuperAdmin ? `Super Admin — ${org.name}` : org.name;
     } catch {}
   }
-  await refreshBuSwitcher();
 
-  setActiveView('chat'); // <-- the whole point: chat is what a user sees immediately after login/signup
+  // Super Admin only: "Switch Account" button (always available) + the
+  // "acting as tenant" banner (only while activeOrgId is set — see tokens.js).
+  switchOrgBtn.classList.toggle('hidden', !me.isSuperAdmin);
+  const acting = !!(me.isSuperAdmin && me.activeOrgId);
+  actingBanner.classList.toggle('hidden', !acting);
+  if (acting) {
+    document.getElementById('actingBannerText').textContent =
+      `🔒 Viewing as Super Admin inside "${orgName || 'this organization'}" — data stays isolated to this tenant`;
+  }
+
+  await refreshBuSwitcher();
 
   connectSocket();
   await loadConversations();
+
+  const initialView = pathToView(location.pathname) || 'dashboard';
+  setActiveView(initialView, { push: location.pathname !== VIEW_ROUTES[initialView] });
+
+  // Reload directly on /accounts (e.g. hard refresh while on the switch page) -> reopen it.
+  if (location.pathname === '/accounts' && me.isSuperAdmin) {
+    await openOrgSwitchPage({ push: false });
+  }
 }
 
 // ------------------------- Sidebar navigation -------------------------
@@ -304,16 +453,150 @@ document.querySelectorAll('.nav-item').forEach((btn) => {
   btn.addEventListener('click', () => setActiveView(btn.dataset.view));
 });
 
-function setActiveView(view) {
+function setActiveView(view, { push = true } = {}) {
+  if (!document.getElementById(`view-${view}`)) view = 'dashboard';
+
   document.querySelectorAll('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
   document.querySelectorAll('.view').forEach((v) => v.classList.toggle('hidden', v.id !== `view-${view}`));
+
+  const path = VIEW_ROUTES[view] || `/${view}`;
+  if (push && location.pathname !== path) history.pushState({ view }, '', path);
+  document.title = `Relay — ${view.charAt(0).toUpperCase()}${view.slice(1)}`;
+
   if (view === 'users') loadTeamMembers();
+  if (view === 'permissions') loadPermissionsView();
+  if (view === 'dashboard') refreshDashboardStats();
 }
+
+// ------------------------- Dashboard -------------------------
+
+async function refreshDashboardStats() {
+  if (!state.me) return;
+  document.getElementById('dashWelcomeName').textContent = state.me.displayName;
+  document.getElementById('dashWelcomeSub').textContent = state.me.isSuperAdmin
+    ? (state.me.activeOrgId ? 'Super Admin — viewing a tenant' : 'Super Admin — platform view')
+    : (state.me.role?.label || 'Team member');
+  document.getElementById('dashConvCount').textContent = state.conversations.length;
+  document.getElementById('dashRoleValue').textContent = state.me.isSuperAdmin ? 'Super Admin' : (state.me.role?.label || '—');
+
+  const teamCountEl = document.getElementById('dashTeamCount');
+  if (!state.me.orgId) {
+    teamCountEl.textContent = '—';
+    return;
+  }
+  try {
+    const users = await ensureOrgUsersLoaded();
+    teamCountEl.textContent = users.length + 1; // +1 for the current user, excluded by ensureOrgUsersLoaded
+  } catch {
+    teamCountEl.textContent = '—';
+  }
+}
+
+// ------------------------- Permissions view -------------------------
+
+async function loadPermissionsView() {
+  const noOrgEl = document.getElementById('permissionsNoOrg');
+  const bodyEl = document.getElementById('permissionsBody');
+  const errEl = document.getElementById('permissionsError');
+  errEl.textContent = '';
+  bodyEl.innerHTML = '';
+
+  if (!state.me.orgId) {
+    noOrgEl.classList.remove('hidden');
+    return;
+  }
+  noOrgEl.classList.add('hidden');
+
+  try {
+    const rolesPath = state.me.isSuperAdmin ? `/roles?orgId=${encodeURIComponent(state.me.orgId)}` : '/roles';
+    const [{ data: roles }, { data: catalog }] = await Promise.all([api(rolesPath), api('/permissions')]);
+    renderPermissions(roles, catalog);
+  } catch (err) {
+    errEl.textContent = err.message;
+  }
+}
+
+function renderPermissions(roles, catalog) {
+  const bodyEl = document.getElementById('permissionsBody');
+  if (!roles.length) {
+    bodyEl.innerHTML = '<div class="stub">No roles yet for this organization.</div>';
+    return;
+  }
+  bodyEl.innerHTML = roles.map((role) => `
+    <div class="role-card" data-role-id="${role.id}">
+      <div class="role-card-header">
+        <div>
+          <div class="role-card-title">${escapeHtml(role.label)} ${role.systemProtected ? '<span class="role-badge">system</span>' : ''}</div>
+          <div class="role-card-key">${escapeHtml(role.key)}</div>
+        </div>
+        ${role.systemProtected ? '' : '<button class="primary-btn save-role-btn" type="button" style="margin:0;">Save</button>'}
+      </div>
+      <div class="role-groups">
+        ${Object.entries(catalog.groups).map(([group, perms]) => `
+          <div class="role-group">
+            <div class="role-group-title">${escapeHtml(group)}</div>
+            ${perms.map((p) => `
+              <label class="perm-check">
+                <input type="checkbox" value="${p}" ${role.permissions.includes(p) ? 'checked' : ''} ${role.systemProtected ? 'disabled' : ''} />
+                ${escapeHtml(p)}
+              </label>
+            `).join('')}
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `).join('');
+
+  bodyEl.querySelectorAll('.role-card').forEach((card) => {
+    const saveBtn = card.querySelector('.save-role-btn');
+    if (!saveBtn) return;
+    saveBtn.addEventListener('click', async () => {
+      const roleId = card.dataset.roleId;
+      const permissions = [...card.querySelectorAll('input[type=checkbox]:checked')].map((cb) => cb.value);
+      const original = saveBtn.textContent;
+      try {
+        await api(`/roles/${roleId}`, { method: 'PATCH', body: { permissions } });
+        saveBtn.textContent = 'Saved ✓';
+        setTimeout(() => { saveBtn.textContent = original; }, 1500);
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+  });
+}
+
+document.getElementById('permissionsSwitchPrompt').addEventListener('click', () => openOrgSwitchPage());
+
+document.getElementById('createRoleBtn').addEventListener('click', () => {
+  if (!state.me.orgId) { alert('Switch into an organization first — see the button above.'); return; }
+  openModal('New role', `
+    <label style="font-size:12px;color:#8b93a3;">Key (e.g. SALES_MANAGER)</label>
+    <input type="text" id="newRoleKey" placeholder="SALES_MANAGER" />
+    <label style="font-size:12px;color:#8b93a3;">Label</label>
+    <input type="text" id="newRoleLabel" placeholder="Sales Manager" />
+    <button class="primary-btn" id="createRoleSaveBtn">Create role</button>
+    <p class="error-msg" id="createRoleError"></p>
+  `);
+  document.getElementById('createRoleSaveBtn').addEventListener('click', async () => {
+    const errEl = document.getElementById('createRoleError');
+    errEl.textContent = '';
+    const key = document.getElementById('newRoleKey').value.trim().toUpperCase().replace(/\s+/g, '_');
+    const label = document.getElementById('newRoleLabel').value.trim();
+    if (!key || !label) { errEl.textContent = 'Key and label are required.'; return; }
+    try {
+      await api('/roles', { method: 'POST', body: { orgId: state.me.orgId, key, label, permissions: [] } });
+      closeModal();
+      await loadPermissionsView();
+    } catch (err) {
+      errEl.textContent = err.message;
+    }
+  });
+});
 
 // ------------------------- Realtime (Socket.IO) -------------------------
 
 function connectSocket() {
-  if (state.socket) state.socket.disconnect(); // re-entering enterApp() after a workspace switch — avoid stacking connections
+  if (state.socket) state.socket.disconnect(); // re-entering enterApp() after a workspace/org switch — avoid stacking connections
   state.socket = io(API_ORIGIN || window.location.origin, { auth: { token: state.accessToken } });
 
   state.socket.on('chat:message', (message) => {
