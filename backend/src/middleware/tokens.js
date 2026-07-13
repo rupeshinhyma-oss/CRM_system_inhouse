@@ -1,10 +1,11 @@
 // FILE: backend/src/middleware/tokens.js
-// Replace the existing file at this path with this one.
-// CHANGE: signAccessToken now resolves the token's `orgId` claim from
-// `user.activeOrgId` when the user is a Super Admin (set via the new
-// POST /organizations/:id/switch-context and /organizations/exit-context
-// routes in routes/v1/organizations.js). Regular tenant users are unaffected
-// — their orgId claim still comes straight from user.orgId as before.
+// REWRITTEN for the Identity -> Membership -> Organization model (see
+// services/identityService.js). The token no longer belongs to one
+// `users` row in one organization — it belongs to an IDENTITY (one login),
+// with a separate `activeOrgId` claim for whichever organization that
+// identity is currently working in. Switching organizations now means
+// re-signing this token with a different activeOrgId — no database writes
+// to any user/identity record, and no more "orgId is baked into who I am."
 
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
@@ -20,39 +21,44 @@ const ACCESS_TOKEN_TTL = '15m';
 const REFRESH_TOKEN_TTL_DAYS = 30;
 
 /**
- * Signs a short-lived JWT access token for a user.
+ * Signs a short-lived JWT access token for an Identity, scoped to one
+ * active organization (or no organization, for a Super Admin at the
+ * platform level, or an identity with no orgs yet).
  *
- * `buId` (active Business Unit id) is additive to the original payload shape —
- * it carries the user's *organization context* in the JioHotstar-style
- * switching sense (see services/businessUnitService.js). It is null for the
- * platform Super Admin and for tenants that predate this feature until they
- * are migrated (see db/migrations/2026_07_add_business_units.js). Nothing
- * about `uid` ever changes on a switch — same user, same session, only the
- * active-context claim differs.
+ * `activeOrgId` resolution order:
+ *   1. Explicit `activeOrgId` passed in (e.g. from /auth/switch-organization)
+ *   2. identity.defaultOrganizationId (first org they ever created)
+ *   3. null (no organization context — platform-level / onboarding)
  *
- * `orgId` claim resolution:
- *   - Regular tenant user  -> user.orgId (their real, fixed tenant)
- *   - Super Admin          -> user.activeOrgId if they've "stepped into" a
- *                             tenant via the account-switching page, else null
- *                             (null = platform-level view, no tenant data).
- * This is what lets every existing org-scoped route (users.list, roles.list,
- * etc., which all filter by req.user.orgId) transparently show a Super
- * Admin the data of whichever tenant they've switched into, with zero
- * changes needed in those routes.
+ * The token also carries the resolved per-org PROFILE (`users` row) for
+ * activeOrgId, if one exists — `uid` — so every existing route that already
+ * does `repo.findById('users', req.user.uid)` / filters by `req.user.orgId`
+ * keeps working completely unchanged. Only Super Admins and brand-new
+ * identities with zero organizations will have `uid: null`.
  */
-function signAccessToken(user) {
-  const effectiveOrgId = user.isSuperAdmin ? (user.activeOrgId || null) : (user.orgId || null);
+async function signAccessToken(identity, { activeOrgId } = {}) {
+  const resolvedOrgId = activeOrgId !== undefined ? activeOrgId : (identity.defaultOrganizationId || null);
+
+  let profile = null;
+  if (resolvedOrgId) {
+    const membership = await repo.findOne('organizationMembers', {
+      identityId: identity.id, organizationId: resolvedOrgId, status: 'ACTIVE',
+    });
+    if (membership) profile = await repo.findById('users', membership.userProfileId);
+  }
+
   return jwt.sign(
     {
-      uid: user.id,
-      orgId: effectiveOrgId,
-      buId: user.activeBusinessUnitId || null,
-      isSuperAdmin: !!user.isSuperAdmin,
-      roleId: user.roleId || null,
-      // True only while a Super Admin is "inside" a switched-to tenant —
-      // lets the frontend show the "Exit to Platform" banner and lets any
-      // route distinguish a real tenant owner from a visiting Super Admin.
-      isActingContext: !!(user.isSuperAdmin && user.activeOrgId),
+      identityId: identity.id,
+      // Backwards-compatible claims so every existing route (which reads
+      // req.user.uid / req.user.orgId / req.user.buId / req.user.roleId)
+      // keeps working with zero changes elsewhere in the codebase.
+      uid: profile ? profile.id : null,
+      orgId: profile ? profile.orgId : null,
+      buId: profile ? profile.activeBusinessUnitId || null : null,
+      roleId: profile ? profile.roleId || null : null,
+      isSuperAdmin: !!identity.isSuperAdmin,
+      activeOrgId: resolvedOrgId,
     },
     JWT_SECRET,
     { expiresIn: ACCESS_TOKEN_TTL }
@@ -64,14 +70,15 @@ function verifyAccessToken(token) {
   return jwt.verify(token, JWT_SECRET);
 }
 
-/** Issues a new opaque refresh token, stored in the DB, tied to a user + device. */
-async function issueRefreshToken(user, meta = {}) {
+/** Same as issueRefreshToken but pins a specific activeOrgId (used by rotation and org-switching). */
+async function issueRefreshTokenWithOrg(identity, activeOrgId, meta = {}) {
   const token = uuidv4() + uuidv4(); // opaque, unguessable
   const expiresAt = new Date(Date.now() + REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000).toISOString();
   await repo.insert('refreshTokens', {
     id: uuidv4(),
     token,
-    userId: user.id,
+    identityId: identity.id,
+    activeOrgId: activeOrgId || null,
     ip: meta.ip || null,
     userAgent: meta.userAgent || null,
     revoked: false,
@@ -81,34 +88,36 @@ async function issueRefreshToken(user, meta = {}) {
   return token;
 }
 
-/** Validates + rotates a refresh token: revokes the old one, issues a new pair. */
+/** Issues a new opaque refresh token, defaulting activeOrgId to the identity's default organization. */
+async function issueRefreshToken(identity, meta = {}) {
+  return issueRefreshTokenWithOrg(identity, identity.defaultOrganizationId || null, meta);
+}
+
+/** Validates + rotates a refresh token: revokes the old one, issues a new pair, preserving activeOrgId. */
 async function rotateRefreshToken(oldToken, meta = {}) {
   const record = await repo.findOne('refreshTokens', { token: oldToken });
   if (!record || record.revoked || new Date(record.expiresAt) < new Date()) return null;
 
-  const user = await repo.findById('users', record.userId);
-  if (!user || !user.enabled) return null;
+  const identity = await repo.findById('identities', record.identityId);
+  if (!identity || identity.status !== 'ACTIVE') return null;
 
   await repo.updateById('refreshTokens', record.id, { revoked: true });
 
-  // Re-signed from the CURRENT db user record, so activeOrgId (set by the
-  // switch-context / exit-context routes) is respected on every refresh —
-  // a Super Admin's chosen tenant context survives past the 15-minute
-  // access-token expiry instead of silently reverting on refresh.
-  const accessToken = signAccessToken(user);
-  const refreshToken = await issueRefreshToken(user, meta);
+  const accessToken = await signAccessToken(identity, { activeOrgId: record.activeOrgId });
+  const refreshToken = await issueRefreshTokenWithOrg(identity, record.activeOrgId, meta);
   return { accessToken, refreshToken };
 }
 
-/** Revokes every refresh token for a user (e.g. on logout / "log out everywhere"). */
-async function revokeAllRefreshTokensForUser(userId) {
-  await repo.updateWhere('refreshTokens', { userId, revoked: false }, { revoked: true });
+/** Revokes every refresh token for an Identity (e.g. on logout / "log out everywhere"). */
+async function revokeAllRefreshTokensForIdentity(identityId) {
+  await repo.updateWhere('refreshTokens', { identityId, revoked: false }, { revoked: true });
 }
 
 module.exports = {
   signAccessToken,
   verifyAccessToken,
   issueRefreshToken,
+  issueRefreshTokenWithOrg,
   rotateRefreshToken,
-  revokeAllRefreshTokensForUser,
+  revokeAllRefreshTokensForIdentity,
 };
