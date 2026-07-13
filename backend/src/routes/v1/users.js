@@ -191,7 +191,27 @@ for (const [path, enabled] of [['disable', false], ['enable', true]]) {
 router.delete('/:id', requireAuth, requirePermission('user.delete'), async (req, res) => {
   const user = await repo.findById('users', req.params.id);
   if (!user || !belongsToSameOrg(req, user.orgId)) return fail(res, 404, 'User not found');
+
   await repo.removeById('users', user.id);
+
+  // Also remove the membership row linking their identity to THIS org —
+  // otherwise the identity model leaves a dangling organizationMembers
+  // row pointing at a userProfileId that no longer exists.
+  if (user.identityId) {
+    await repo.removeWhere('organizationMembers', { identityId: user.identityId, organizationId: user.orgId });
+
+    // If that was their only membership anywhere, there's no login left
+    // that this identity is useful for — clean it up too, rather than
+    // leaving an orphaned identity with no organizations forever.
+    const remaining = await repo.count('organizationMembers', { identityId: user.identityId });
+    if (remaining === 0) {
+      const identity = await repo.findById('identities', user.identityId);
+      if (identity && !identity.isSuperAdmin) {
+        await repo.removeById('identities', user.identityId);
+      }
+    }
+  }
+
   await recordAudit(req, { action: 'user.delete', entityType: 'user', entityId: user.id });
   res.status(204).send();
 });
