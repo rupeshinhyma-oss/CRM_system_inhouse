@@ -103,19 +103,45 @@ async function getMembership(identityId, organizationId) {
 }
 
 /**
+ * Computes the next "Org N (Default)" placeholder name for an identity
+ * creating an organization without specifying a name — N is 1 higher than
+ * how many organizations this identity has ever created, so the first is
+ * "Org 1 (Default)", the second "Org 2 (Default)", and so on, regardless
+ * of whether earlier ones were later renamed or deleted.
+ */
+async function nextPlaceholderOrgName(identityId) {
+  const memberships = await repo.list('organizationMembers', { identityId, role: 'owner' });
+  return `Org ${memberships.length + 1} (Default)`;
+}
+
+/**
  * Creates a brand-new, fully isolated ORGANIZATION under an ALREADY
  * AUTHENTICATED identity. This is the "+ Create Organization" flow —
  * deliberately takes NO password, because the identity is already logged
  * in. Mirrors Slack's "Create a workspace" / Notion's "Create workspace"
  * modal: only org-level details are asked for.
  *
+ * `orgName` is OPTIONAL. If omitted, the organization is created with a
+ * sequential placeholder name — "Org 1 (Default)", "Org 2 (Default)", etc.,
+ * counted across every organization THIS identity has created so far — so
+ * a Super Admin can spin up a new tenant instantly without being forced to
+ * think of a name first. This is just the organization's normal `name`
+ * field (nothing special/computed about it), so renaming it later via the
+ * ordinary PATCH /organizations/:id (Settings page) works exactly like
+ * renaming any other organization, and the placeholder never reappears
+ * once it's been renamed.
+ *
  * If this is the identity's very first organization, it's set as their
  * defaultOrganizationId (opens automatically on future logins).
  */
 async function createOrganizationForIdentity(identity, { orgName, industry, country }) {
+  const resolvedOrgName = orgName && orgName.trim()
+    ? orgName.trim()
+    : await nextPlaceholderOrgName(identity.id);
+
   const org = await repo.insert('organizations', {
     id: uuidv4(),
-    name: orgName,
+    name: resolvedOrgName,
     logoUrl: null,
     address: null,
     country: country || null,
