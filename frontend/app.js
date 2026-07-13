@@ -155,7 +155,12 @@ document.getElementById('logoutBtn').addEventListener('click', async () => {
   try { await api('/auth/logout', { method: 'POST' }); } catch {}
   clearTokens();
   if (state.socket) state.socket.disconnect();
-  location.reload();
+  // IMPORTANT: don't location.reload() — that re-requests whatever deep path
+  // you were on (e.g. /settings, /accounts). Render's static site (and most
+  // static hosts) only serve index.html for paths that don't match a real
+  // file, and 404 on a hard reload/refetch of a client-side route. Always
+  // send the browser to the real root path on logout instead.
+  window.location.href = '/';
 });
 
 // ------------------------- Organization switching ("Who's working?") -------------------------
@@ -358,6 +363,72 @@ async function selectOrganizationContext(orgId) {
 
 switchOrgBtn.addEventListener('click', () => openOrgSwitchPage());
 document.getElementById('orgSwitchBackBtn').addEventListener('click', () => closeOrgSwitchPage());
+
+// ------------------------- Super Admin — Add Account (create + auto-switch) -------------------------
+// Creates a brand-new tenant organization (with its own owner user) via the existing
+// POST /organizations endpoint, then immediately switches the Super Admin's context into
+// it via the existing POST /organizations/:id/switch-context — same call the "Switch →"
+// list items use. New orgs are created with a fresh id, so they start with zero
+// conversations/groups/CRM records/users other than the owner: fully isolated from
+// every other tenant by construction (every backend route filters by orgId).
+
+const orgAddModal = document.getElementById('orgAddModal');
+const orgAddForm = document.getElementById('orgAddForm');
+
+document.getElementById('orgAddAccountBtn').addEventListener('click', () => {
+  document.getElementById('orgAddError').textContent = '';
+  orgAddForm.reset();
+  orgAddModal.classList.remove('hidden');
+});
+document.getElementById('orgAddModalClose').addEventListener('click', () => orgAddModal.classList.add('hidden'));
+orgAddModal.addEventListener('click', (e) => { if (e.target === orgAddModal) orgAddModal.classList.add('hidden'); });
+
+orgAddForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const errEl = document.getElementById('orgAddError');
+  const submitBtn = document.getElementById('orgAddSubmitBtn');
+  errEl.textContent = '';
+
+  const orgName = document.getElementById('orgAddOrgName').value.trim();
+  const ownerDisplayName = document.getElementById('orgAddOwnerName').value.trim();
+  const ownerEmail = document.getElementById('orgAddOwnerEmail').value.trim();
+  const ownerPassword = document.getElementById('orgAddOwnerPassword').value;
+
+  if (!orgName || !ownerDisplayName || !ownerEmail || !ownerPassword) {
+    errEl.textContent = 'All fields are required.';
+    return;
+  }
+  if (ownerPassword.length < 8) {
+    errEl.textContent = 'Password must be at least 8 characters.';
+    return;
+  }
+
+  submitBtn.disabled = true;
+  submitBtn.textContent = 'Creating…';
+  try {
+    // 1) Create the new isolated organization + its owner user.
+    const { data: newOrg } = await api('/organizations', {
+      method: 'POST',
+      body: { orgName, ownerDisplayName, ownerEmail, ownerPassword },
+    });
+
+    // 2) Immediately switch the Super Admin's context into the freshly created org
+    //    — same mechanism as clicking an existing org in the list.
+    const { data: switched } = await api(`/organizations/${newOrg.id}/switch-context`, { method: 'POST' });
+    setTokens(switched.accessToken, switched.refreshToken);
+
+    orgAddModal.classList.add('hidden');
+    orgSwitchScreen.classList.add('hidden');
+    appShell.classList.remove('hidden');
+    history.pushState({ view: 'dashboard' }, '', '/dashboard');
+    await enterApp();
+  } catch (err) {
+    errEl.textContent = err.message;
+  } finally {
+    submitBtn.disabled = false;
+    submitBtn.textContent = 'Create & switch into account';
+  }
+});
 
 document.getElementById('exitContextBtn').addEventListener('click', async () => {
   try {
