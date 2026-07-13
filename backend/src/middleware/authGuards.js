@@ -1,7 +1,7 @@
 const repo = require('../db');
 const { verifyAccessToken } = require('./tokens');
 
-/** Requires a valid Bearer access token. Attaches req.user = { uid, orgId, isSuperAdmin, roleId }. */
+/** Requires a valid Bearer access token. Attaches req.user = { identityId, uid, orgId, isSuperAdmin, roleId, activeOrgId }. */
 async function requireAuth(req, res, next) {
   const header = req.headers.authorization;
   if (!header || !header.startsWith('Bearer ')) {
@@ -9,8 +9,10 @@ async function requireAuth(req, res, next) {
   }
   try {
     req.user = verifyAccessToken(header.substring(7));
-    const dbUser = await repo.findById('users', req.user.uid);
-    if (!dbUser || !dbUser.enabled) return res.status(401).json({ error: 'Account not found or disabled' });
+    // The IDENTITY (the login/email+password) is the thing that can be
+    // disabled — not the per-org profile row, which is just membership data.
+    const identity = await repo.findById('identities', req.user.identityId);
+    if (!identity || identity.status !== 'ACTIVE') return res.status(401).json({ error: 'Account not found or disabled' });
     next();
   } catch (err) {
     return res.status(401).json({ error: 'Invalid or expired token' });
