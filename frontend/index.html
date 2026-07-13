@@ -114,9 +114,35 @@
         </div>
         <button id="orgSwitchBackBtn" class="link-btn">← Back</button>
       </div>
-      <input type="text" id="orgSwitchSearch" placeholder="Search organizations…" style="margin:16px 0 10px;" />
+      <div style="display:flex; gap:8px; margin:16px 0 10px;">
+        <input type="text" id="orgSwitchSearch" placeholder="Search organizations…" style="margin:0; flex:1;" />
+        <button id="orgAddAccountBtn" type="button" class="primary-btn" style="margin:0; white-space:nowrap;">＋ Add Account</button>
+      </div>
       <div id="orgSwitchList" class="org-switch-list"></div>
       <p class="error-msg" id="orgSwitchError"></p>
+    </div>
+  </div>
+
+  <!-- ADD ACCOUNT MODAL — Super Admin creates a brand-new, fully isolated tenant
+       organization (with its own owner user) and is switched into it immediately. -->
+  <div id="orgAddModal" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <span>Add Account</span>
+        <button id="orgAddModalClose" class="link-btn" type="button">✕</button>
+      </div>
+      <form id="orgAddForm" class="modal-body">
+        <label style="font-size:12px;color:#8b93a3;">Organization name</label>
+        <input type="text" id="orgAddOrgName" placeholder="Acme Corp" required />
+        <label style="font-size:12px;color:#8b93a3;">Owner full name</label>
+        <input type="text" id="orgAddOwnerName" placeholder="Jane Doe" required />
+        <label style="font-size:12px;color:#8b93a3;">Owner email</label>
+        <input type="email" id="orgAddOwnerEmail" placeholder="jane@acme.com" required />
+        <label style="font-size:12px;color:#8b93a3;">Owner password</label>
+        <input type="password" id="orgAddOwnerPassword" minlength="8" placeholder="min 8 characters" required />
+        <button type="submit" class="primary-btn" id="orgAddSubmitBtn">Create &amp; switch into account</button>
+        <p class="error-msg" id="orgAddError"></p>
+      </form>
     </div>
   </div>
 
