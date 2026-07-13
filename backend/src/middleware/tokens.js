@@ -1,3 +1,11 @@
+// FILE: backend/src/middleware/tokens.js
+// Replace the existing file at this path with this one.
+// CHANGE: signAccessToken now resolves the token's `orgId` claim from
+// `user.activeOrgId` when the user is a Super Admin (set via the new
+// POST /organizations/:id/switch-context and /organizations/exit-context
+// routes in routes/v1/organizations.js). Regular tenant users are unaffected
+// — their orgId claim still comes straight from user.orgId as before.
+
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
 const repo = require('../db');
@@ -21,15 +29,30 @@ const REFRESH_TOKEN_TTL_DAYS = 30;
  * are migrated (see db/migrations/2026_07_add_business_units.js). Nothing
  * about `uid` ever changes on a switch — same user, same session, only the
  * active-context claim differs.
+ *
+ * `orgId` claim resolution:
+ *   - Regular tenant user  -> user.orgId (their real, fixed tenant)
+ *   - Super Admin          -> user.activeOrgId if they've "stepped into" a
+ *                             tenant via the account-switching page, else null
+ *                             (null = platform-level view, no tenant data).
+ * This is what lets every existing org-scoped route (users.list, roles.list,
+ * etc., which all filter by req.user.orgId) transparently show a Super
+ * Admin the data of whichever tenant they've switched into, with zero
+ * changes needed in those routes.
  */
 function signAccessToken(user) {
+  const effectiveOrgId = user.isSuperAdmin ? (user.activeOrgId || null) : (user.orgId || null);
   return jwt.sign(
     {
       uid: user.id,
-      orgId: user.orgId || null,
+      orgId: effectiveOrgId,
       buId: user.activeBusinessUnitId || null,
       isSuperAdmin: !!user.isSuperAdmin,
       roleId: user.roleId || null,
+      // True only while a Super Admin is "inside" a switched-to tenant —
+      // lets the frontend show the "Exit to Platform" banner and lets any
+      // route distinguish a real tenant owner from a visiting Super Admin.
+      isActingContext: !!(user.isSuperAdmin && user.activeOrgId),
     },
     JWT_SECRET,
     { expiresIn: ACCESS_TOKEN_TTL }
@@ -68,6 +91,10 @@ async function rotateRefreshToken(oldToken, meta = {}) {
 
   await repo.updateById('refreshTokens', record.id, { revoked: true });
 
+  // Re-signed from the CURRENT db user record, so activeOrgId (set by the
+  // switch-context / exit-context routes) is respected on every refresh —
+  // a Super Admin's chosen tenant context survives past the 15-minute
+  // access-token expiry instead of silently reverting on refresh.
   const accessToken = signAccessToken(user);
   const refreshToken = await issueRefreshToken(user, meta);
   return { accessToken, refreshToken };
