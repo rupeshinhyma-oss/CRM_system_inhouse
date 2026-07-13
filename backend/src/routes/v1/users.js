@@ -6,6 +6,7 @@ const repo = require('../../db');
 const { nowIso } = require('../../utils/time');
 const { requireAuth, requirePermission, belongsToSameOrg } = require('../../middleware/authGuards');
 const { recordAudit } = require('../../middleware/auditLog');
+const { ensureDefaultBusinessUnit, addMembership } = require('../../services/businessUnitService');
 const { ok, created, fail, paginate } = require('../../utils/respond');
 
 const router = express.Router();
@@ -73,12 +74,23 @@ router.post('/invite', requireAuth, requirePermission('user.create'), async (req
     language: 'en',
     isSuperAdmin: false,
     roleId: resolvedRoleId,
+    activeBusinessUnitId: null, // set below once we know which business unit they're joining
     status: 'OFFLINE',
     enabled: true,
     lastLoginAt: null,
     createdAt: nowIso(),
     updatedAt: nowIso(),
   });
+
+  // New teammates start in whichever business unit the inviting admin is
+  // currently working in (falls back to the org's Default unit if the
+  // inviter has no active context, e.g. a Super Admin inviting directly).
+  if (req.user.orgId) {
+    const targetBusinessUnitId = req.user.buId || (await ensureDefaultBusinessUnit(req.user.orgId)).id;
+    await addMembership(targetBusinessUnitId, user.id, resolvedRoleId, 'ACTIVE');
+    await repo.updateById('users', user.id, { activeBusinessUnitId: targetBusinessUnitId });
+    user.activeBusinessUnitId = targetBusinessUnitId;
+  }
 
   await recordAudit(req, { action: 'user.invite', entityType: 'user', entityId: user.id, newValue: publicUser(user) });
 
