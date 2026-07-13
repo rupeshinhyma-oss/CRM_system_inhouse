@@ -28,14 +28,18 @@ router.get('/', requireAuth, requireSuperAdmin, async (req, res) => {
   ok(res, await listOrganizations());
 });
 
-// POST /api/v1/organizations  { orgName, industry?, country? }
+// POST /api/v1/organizations  { orgName?, industry?, country? }
 // "+ Create Organization" — NO email/password. Adds a new organization
 // (and membership) under the ALREADY AUTHENTICATED identity making this
 // call. Any identity can do this, not just Super Admin — creating your
 // second, third, tenth organization works the same way for everyone.
+//
+// orgName is OPTIONAL: leaving it blank auto-names the organization
+// "Org 1 (Default)" / "Org 2 (Default)" / etc. (sequential per identity),
+// so a Super Admin can spin up a new tenant with one click and rename it
+// whenever they get around to it — see identityService.createOrganizationForIdentity.
 router.post('/', requireAuth, async (req, res) => {
   const { orgName, industry, country } = req.body || {};
-  if (!orgName) return fail(res, 400, 'orgName is required');
 
   try {
     const identity = await repo.findById('identities', req.user.identityId);
