@@ -19,6 +19,10 @@ const PERMISSION_GROUPS = {
   file: ['file.upload', 'file.download', 'file.delete', 'file.share'],
   analytics: ['analytics.view', 'analytics.export'],
   admin: ['admin.settings', 'admin.users', 'admin.roles', 'admin.permissions', 'admin.audit'],
+  // Business Unit ("organization switching" — see ARCHITECTURE.md §10) management,
+  // distinct from `admin.*` (tenant-level) since a tenant admin may want to delegate
+  // BU management without granting full admin rights.
+  org: ['org.manage_business_units', 'org.view_business_units'],
 };
 
 const ALL_PERMISSIONS = Object.values(PERMISSION_GROUPS).flat();
