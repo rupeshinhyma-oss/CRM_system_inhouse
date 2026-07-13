@@ -67,12 +67,51 @@
     </div>
   </div>
 
+  <!-- ===================== WORKSPACE SELECTOR ("Who's working?" — organization switching) =====================
+       Shown after login/signup, before the main app. Not a login screen: the user is already
+       authenticated here. Picking a tile only changes which business unit (workspace) is active —
+       same user identity throughout. See backend/src/services/businessUnitService.js. -->
+  <div id="buSelectScreen" class="auth-screen hidden">
+    <div class="auth-card bu-select-card">
+      <h1 class="brand">Relay</h1>
+      <p class="brand-sub">Who's working?</p>
+      <div id="buTileGrid" class="bu-tile-grid"></div>
+      <button id="buCreateBtn" class="link-btn hidden">＋ Create workspace</button>
+      <p class="error-msg" id="buSelectError"></p>
+    </div>
+  </div>
+
+  <!-- Create-workspace modal (kept minimal — reuses existing auth-form styling) -->
+  <div id="buCreateModal" class="auth-screen hidden">
+    <div class="auth-card">
+      <h1 class="brand">New workspace</h1>
+      <p class="brand-sub">Adds another switchable organization under your company</p>
+      <form id="buCreateForm" class="auth-form">
+        <label>Workspace name</label>
+        <input type="text" id="buCreateName" required placeholder="Acme India" />
+        <label>Code (optional)</label>
+        <input type="text" id="buCreateCode" placeholder="ACME-IN" />
+        <button type="submit" class="primary-btn">Create workspace</button>
+        <button type="button" id="buCreateCancel" class="link-btn">Cancel</button>
+        <p class="error-msg" id="buCreateError"></p>
+      </form>
+    </div>
+  </div>
+
   <!-- ===================== MAIN APP (shown right after login/signup) ===================== -->
   <div id="appShell" class="app-shell hidden">
     <aside class="sidebar">
       <div class="sidebar-header">
         <div class="brand-mini">Relay</div>
         <div class="org-name" id="orgNameLabel"></div>
+
+        <!-- Header organization switcher: "Rupesh / Acme India ▼" -->
+        <div class="bu-switcher" id="buSwitcher">
+          <button id="buSwitcherBtn" class="bu-switcher-btn hidden">
+            <span id="buSwitcherLabel">—</span> <span class="bu-caret">▾</span>
+          </button>
+          <div id="buSwitcherMenu" class="bu-switcher-menu hidden"></div>
+        </div>
       </div>
 
       <nav class="sidebar-nav">
