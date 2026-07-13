@@ -65,4 +65,26 @@ function belongsToSameOrg(req, resourceOrgId) {
   return req.user?.orgId === resourceOrgId;
 }
 
-module.exports = { requireAuth, requireSuperAdmin, requirePermission, getEffectivePermissions, belongsToSameOrg };
+/**
+ * Ensures a resource's businessUnitId matches the requesting user's ACTIVE
+ * business unit — the "organization switching" isolation boundary that sits
+ * one level below tenant isolation (see services/businessUnitService.js and
+ * ARCHITECTURE.md §10). Super Admin bypasses it, same as belongsToSameOrg.
+ *
+ * A resource with no businessUnitId at all (a record created before this
+ * feature existed, prior to running the backfill migration) is treated as
+ * visible — this is a deliberate, documented backward-compat allowance, not
+ * a silent gap: run db/migrations/2026_07_add_business_units.js to backfill
+ * every legacy record onto its org's Default business unit, after which
+ * every record has a businessUnitId and this fallback stops applying.
+ */
+function belongsToSameBusinessUnit(req, resourceBuId) {
+  if (req.user?.isSuperAdmin) return true;
+  if (!resourceBuId) return true;
+  return req.user?.buId === resourceBuId;
+}
+
+module.exports = {
+  requireAuth, requireSuperAdmin, requirePermission, getEffectivePermissions,
+  belongsToSameOrg, belongsToSameBusinessUnit,
+};
