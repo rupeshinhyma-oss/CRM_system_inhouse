@@ -133,3 +133,42 @@ body {
 .crm-subtab:hover { background: #1a1f29; }
 .crm-subtab.active { background: #1f2735; color: #fff; border-color: #2a3140; }
 .crm-subview { flex: 1; display: flex; overflow: auto; }
+
+/* ---------- Workspace selector ("Who's working?" — organization switching) ---------- */
+.bu-select-card { width: 480px; text-align: center; }
+.bu-tile-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 14px; margin: 8px 0 18px;
+}
+.bu-tile {
+  padding: 20px 10px; border-radius: 12px; border: 1px solid #2a3140; background: #1a1f29;
+  color: #e6e8eb; cursor: pointer; font-size: 13px; font-weight: 600; text-align: center;
+  transition: border-color .15s, background .15s;
+}
+.bu-tile:hover { border-color: #7dd3fc; background: #1f2735; }
+.bu-tile .bu-tile-avatar {
+  width: 48px; height: 48px; border-radius: 10px; background: #2a3140; margin: 0 auto 10px;
+  display: flex; align-items: center; justify-content: center; font-size: 18px; color: #7dd3fc;
+}
+
+/* ---------- Header organization switcher ---------- */
+.bu-switcher { position: relative; margin-top: 8px; }
+.bu-switcher-btn {
+  display: flex; align-items: center; gap: 6px; background: #1a1f29; border: 1px solid #2a3140;
+  color: #e6e8eb; border-radius: 8px; padding: 6px 10px; font-size: 12px; cursor: pointer; width: 100%;
+}
+.bu-switcher-btn:hover { background: #1f2735; }
+.bu-caret { color: #8b93a3; font-size: 10px; }
+.bu-switcher-menu {
+  position: absolute; top: calc(100% + 6px); left: 0; width: 220px; z-index: 20;
+  background: #161a22; border: 1px solid #262c38; border-radius: 10px; padding: 6px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.4);
+}
+.bu-switcher-menu .bu-menu-item {
+  padding: 9px 10px; border-radius: 6px; cursor: pointer; font-size: 13px; color: #cbd3e0;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.bu-switcher-menu .bu-menu-item:hover { background: #1f2735; }
+.bu-switcher-menu .bu-menu-item.active { color: #7dd3fc; }
+.bu-switcher-menu .bu-menu-divider { height: 1px; background: #232833; margin: 6px 2px; }
+.bu-switcher-menu .bu-menu-create { color: #7dd3fc; font-weight: 600; }
