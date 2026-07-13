@@ -86,9 +86,25 @@ async function listBusinessUnitsForUser(user) {
   const units = [];
   for (const m of memberships) {
     const bu = await repo.findById('businessUnits', m.businessUnitId);
-    if (bu && bu.orgId === user.orgId && bu.status === 'ACTIVE') units.push(bu);
+    if (bu && bu.orgId === user.orgId && bu.status === 'ACTIVE') units.push(await withDisplayName(bu));
   }
   return units;
+}
+
+/**
+ * Adds a computed `displayName` to a business unit WITHOUT changing its
+ * stored `name` field. For the org's isDefault unit, this is always
+ * "<current organization name> (Default)" — resolved live from the
+ * organization every time, so renaming the organization later (e.g.
+ * "Org 1" -> "ACP") is reflected immediately as "ACP (Default)" with no
+ * migration or backfill needed. Every other (non-default) business unit
+ * just uses its own stored name unchanged.
+ */
+async function withDisplayName(bu) {
+  if (!bu.isDefault) return { ...bu, displayName: bu.name };
+  const org = await repo.findById('organizations', bu.orgId);
+  const orgName = org ? org.name : bu.name;
+  return { ...bu, displayName: `${orgName} (Default)` };
 }
 
 async function isMember(userId, businessUnitId) {
