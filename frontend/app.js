@@ -19,6 +19,19 @@ const state = {
   conversations: [],
   activeConversationId: null,
   orgUsers: [], // cached for the "New DM" / "New group" pickers — reset on every enterApp() so a Super Admin org switch never leaks the previous tenant's list
+
+  // --- Chat reliability additions ---
+  // Messages typed while offline (or whose send hasn't been ack'd yet) queue
+  // here, keyed by clientMessageId, and flush automatically the moment the
+  // socket (re)connects. Survives the tab staying open through a network
+  // blip; does NOT survive a hard refresh (that's a documented tradeoff —
+  // true offline-first persistence would need IndexedDB, which is a bigger
+  // change than this pass covers).
+  outgoingQueue: [], // [{ clientMessageId, conversationId, content, replyToId, status: 'queued'|'sending'|'failed' }]
+  // Per-conversation "last message timestamp I've actually rendered" — replayed
+  // to the server as sync cursors on every (re)connect so nothing sent while
+  // this tab's socket was silently dead (laptop sleep, etc.) gets lost.
+  syncCursors: {}, // { [conversationId]: isoTimestamp }
 };
 
 // ------------------------- API helper with auto-refresh -------------------------
@@ -706,15 +719,47 @@ document.getElementById('createRoleBtn').addEventListener('click', () => {
 
 function connectSocket() {
   if (state.socket) state.socket.disconnect(); // re-entering enterApp() after a workspace/org switch — avoid stacking connections
-  state.socket = io(API_ORIGIN || window.location.origin, { auth: { token: state.accessToken } });
+  state.socket = io(API_ORIGIN || window.location.origin, {
+    auth: { token: state.accessToken },
+    reconnection: true,
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 10000,
+  });
+
+  // Fires on first connect AND every automatic reconnect (socket.io's own
+  // 'reconnect' event only fires for reconnects, not the initial connect —
+  // 'connect' fires for both, which is exactly the "ran every time we have
+  // a fresh connection" hook we want for catch-up sync).
+  state.socket.on('connect', () => {
+    requestSyncForOpenConversations();
+    flushOutgoingQueue();
+  });
+
+  // Server pushes anything that was queued for us while we were offline
+  // (see backend chat:sync on connection + drainPendingDeliveriesForUser).
+  state.socket.on('chat:sync', ({ messages }) => {
+    messages.forEach((message) => {
+      if (message.conversationId === state.activeConversationId) {
+        renderMessage(message);
+      }
+      bumpConversationPreview(message);
+      updateSyncCursor(message);
+    });
+    if (messages.some((m) => m.conversationId === state.activeConversationId)) scrollMessagesToBottom();
+  });
 
   state.socket.on('chat:message', (message) => {
     if (message.conversationId === state.activeConversationId) {
       renderMessage(message);
       scrollMessagesToBottom();
+      state.socket.emit('chat:delivered', { messageId: message.id });
     }
     bumpConversationPreview(message);
+    updateSyncCursor(message);
   });
+
+  state.socket.on('chat:delivered', ({ messageId }) => setMessageTick(messageId, 'delivered'));
+  state.socket.on('chat:read', ({ messageId }) => setMessageTick(messageId, 'read'));
 
   state.socket.on('presence:update', ({ userId, status }) => {
     if (state.activeConversation && state.activeConversation.type === 'DIRECT') {
@@ -732,6 +777,127 @@ function connectSocket() {
       document.getElementById('chatTitle').textContent = isTyping ? `${base} — ${displayName} is typing…` : base;
     }
   });
+}
+
+// Ask the server for anything created after the last message we actually
+// rendered, per conversation. Covers the case where the socket died
+// silently (OS suspended the machine, etc.) without the server or client
+// ever seeing a clean 'disconnect' — the offline-queue drain alone doesn't
+// catch this because the server may never have marked anything PENDING.
+function requestSyncForOpenConversations() {
+  if (!state.socket) return;
+  const cursors = { ...state.syncCursors };
+  if (Object.keys(cursors).length === 0) return;
+  state.socket.emit('chat:sync_request', { cursors }, (ack) => {
+    if (ack?.error) return; // best-effort; REST GET /conversations/:id/messages remains the source of truth on next open
+    let touchedActiveConversation = false;
+    Object.entries(ack.results || {}).forEach(([conversationId, messages]) => {
+      messages.forEach((message) => {
+        if (conversationId === state.activeConversationId && !document.querySelector(`[data-message-id="${message.id}"]`)) {
+          renderMessage(message);
+          touchedActiveConversation = true;
+        }
+        bumpConversationPreview(message);
+        updateSyncCursor(message);
+      });
+    });
+    if (touchedActiveConversation) scrollMessagesToBottom();
+  });
+}
+
+function updateSyncCursor(message) {
+  const known = state.syncCursors[message.conversationId];
+  if (!known || new Date(message.createdAt) > new Date(known)) {
+    state.syncCursors[message.conversationId] = message.createdAt;
+  }
+}
+
+// ------------------------- Outgoing message queue (offline-safe sending) -------------------------
+
+function queueOutgoingMessage({ conversationId, content, replyToId }) {
+  const clientMessageId = (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`);
+  const entry = { clientMessageId, conversationId, content, replyToId: replyToId || null, status: 'queued' };
+  state.outgoingQueue.push(entry);
+  renderOptimisticMessage(entry);
+  flushOutgoingQueue();
+  return entry;
+}
+
+function flushOutgoingQueue() {
+  if (!state.socket || !state.socket.connected) return; // will retry on next 'connect' event
+  state.outgoingQueue.filter((m) => m.status === 'queued' || m.status === 'failed').forEach((entry) => {
+    entry.status = 'sending';
+    setMessageTick(entry.clientMessageId, 'sending', true);
+    state.socket.emit('chat:send', {
+      conversationId: entry.conversationId,
+      content: entry.content,
+      replyToId: entry.replyToId,
+      clientMessageId: entry.clientMessageId,
+    }, (ack) => {
+      if (ack?.error) {
+        entry.status = 'failed';
+        setMessageTick(entry.clientMessageId, 'failed', true);
+        return;
+      }
+      // Server has the real message now (possibly with the real id, if this
+      // was a fresh send) — reconcile the optimistic bubble with it and drop
+      // the queue entry; chat:message will also arrive for other tabs/devices
+      // but this client already rendered it optimistically so we just re-tag it.
+      state.outgoingQueue = state.outgoingQueue.filter((q) => q.clientMessageId !== entry.clientMessageId);
+      reconcileOptimisticMessage(entry.clientMessageId, ack.message);
+      updateSyncCursor(ack.message);
+    });
+  });
+}
+
+function renderOptimisticMessage(entry) {
+  if (entry.conversationId !== state.activeConversationId) return;
+  const list = document.getElementById('messageList');
+  const bubble = document.createElement('div');
+  bubble.className = 'message-bubble mine';
+  bubble.dataset.clientMessageId = entry.clientMessageId;
+  bubble.innerHTML = `
+    <div>${escapeHtml(entry.content)}</div>
+    <div class="message-meta">You · <span class="msg-tick" data-tick>sending…</span></div>
+  `;
+  list.appendChild(bubble);
+  scrollMessagesToBottom();
+}
+
+function reconcileOptimisticMessage(clientMessageId, message) {
+  const bubble = document.querySelector(`[data-client-message-id="${clientMessageId}"]`);
+  if (bubble) {
+    bubble.dataset.messageId = message.id;
+    const tick = bubble.querySelector('[data-tick]');
+    if (tick) tick.textContent = new Date(message.createdAt).toLocaleTimeString() + ' · Sent ✓';
+  }
+}
+
+// Updates the little status tick under a message bubble. Looks the bubble up
+// by clientMessageId first (still-optimistic, pre-ack) then falls back to
+// the server messageId (post-ack, delivered/read receipts from other users).
+function setMessageTick(id, state_, isClientId) {
+  const selector = isClientId ? `[data-client-message-id="${id}"]` : `[data-message-id="${id}"]`;
+  const bubble = document.querySelector(selector);
+  if (!bubble) return;
+  const tick = bubble.querySelector('[data-tick]');
+  if (!tick) return;
+  const labels = { sending: 'Sending…', failed: 'Failed to send — tap to retry', delivered: 'Delivered ✓✓', read: 'Read ✓✓' };
+  tick.textContent = labels[state_] || tick.textContent;
+  tick.classList.toggle('tick-failed', state_ === 'failed');
+  tick.classList.toggle('tick-read', state_ === 'read');
+  if (state_ === 'failed') {
+    tick.onclick = () => retryFailedMessage(id);
+    tick.style.cursor = 'pointer';
+  }
+}
+
+function retryFailedMessage(clientMessageId) {
+  const entry = state.outgoingQueue.find((q) => q.clientMessageId === clientMessageId);
+  if (entry) {
+    entry.status = 'queued';
+    flushOutgoingQueue();
+  }
 }
 
 // ------------------------- Conversations list -------------------------
@@ -781,6 +947,7 @@ async function openConversation(conv) {
   const list = document.getElementById('messageList');
   list.innerHTML = '';
   messages.forEach(renderMessage);
+  messages.forEach(updateSyncCursor);
   scrollMessagesToBottom();
 }
 
@@ -789,11 +956,23 @@ function renderMessage(message) {
   const bubble = document.createElement('div');
   const mine = message.senderId === state.me.id;
   bubble.className = 'message-bubble' + (mine ? ' mine' : '');
+  bubble.dataset.messageId = message.id;
+  const tickHtml = mine ? ` · <span class="msg-tick" data-tick>${statusLabel(message.status)}</span>` : '';
   bubble.innerHTML = `
     <div>${escapeHtml(message.content)}</div>
-    <div class="message-meta">${mine ? 'You' : escapeHtml(message.sender?.displayName || 'Unknown')} · ${new Date(message.createdAt).toLocaleTimeString()}</div>
+    <div class="message-meta">${mine ? 'You' : escapeHtml(message.sender?.displayName || 'Unknown')} · ${new Date(message.createdAt).toLocaleTimeString()}${tickHtml}</div>
   `;
   list.appendChild(bubble);
+
+  // Viewing a message from someone else counts as reading it — tell the server.
+  if (!mine && state.socket) {
+    state.socket.emit('chat:delivered', { messageId: message.id });
+    state.socket.emit('chat:read', { conversationId: message.conversationId, messageId: message.id });
+  }
+}
+
+function statusLabel(status) {
+  return { PENDING: 'Sending…', SENT: 'Sent ✓', DELIVERED: 'Delivered ✓✓', READ: 'Read ✓✓', FAILED: 'Failed to send' }[status] || '';
 }
 
 function scrollMessagesToBottom() {
@@ -808,9 +987,7 @@ document.getElementById('messageForm').addEventListener('submit', (e) => {
   const input = document.getElementById('messageInput');
   const content = input.value.trim();
   if (!content || !state.activeConversationId) return;
-  state.socket.emit('chat:send', { conversationId: state.activeConversationId, content }, (ack) => {
-    if (ack?.error) alert(ack.error);
-  });
+  queueOutgoingMessage({ conversationId: state.activeConversationId, content });
   input.value = '';
 });
 
