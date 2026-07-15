@@ -115,6 +115,20 @@ async function ensureIndexes(db) {
     idx('conversations', { userBId: 1 }),
     idx('messages', { id: 1 }, { unique: true }),
     idx('messages', { conversationId: 1 }),
+    idx('messages', { conversationId: 1, createdAt: 1 }),
+    // Idempotency: a retried chat:send with the same clientMessageId in the
+    // same conversation must resolve to the ORIGINAL message, never a
+    // duplicate row. Enforced at the DB level, not just in application code,
+    // for the same race-condition reason identities.email is enforced there.
+    idx('messages', { conversationId: 1, clientMessageId: 1 }, { unique: true, sparse: true }),
+
+    // Per-recipient delivery/read tracking — see services/chatDeliveryService.js.
+    // One row per (message, recipient); this IS the offline-message queue,
+    // not a separate structure: a PENDING row is a queued, undelivered message.
+    idx('messageDeliveries', { id: 1 }, { unique: true }),
+    idx('messageDeliveries', { messageId: 1, userId: 1 }, { unique: true }),
+    idx('messageDeliveries', { userId: 1, status: 1 }),
+    idx('messageDeliveries', { conversationId: 1, userId: 1 }),
 
     idx('auditLogs', { id: 1 }, { unique: true }),
     idx('auditLogs', { orgId: 1 }),
