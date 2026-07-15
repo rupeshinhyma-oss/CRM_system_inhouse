@@ -170,6 +170,8 @@ body {
 .message-bubble { max-width: 60%; padding: 8px 12px; border-radius: 12px; background: #1f2735; font-size: 14px; }
 .message-bubble.mine { align-self: flex-end; background: #2563eb; color: #fff; }
 .message-meta { font-size: 10px; color: #8b93a3; margin-top: 4px; }
+.msg-tick.tick-failed { color: #f87171; text-decoration: underline; }
+.msg-tick.tick-read { color: #93c5fd; }
 .message-form { display: flex; gap: 10px; padding: 14px 20px; border-top: 1px solid #232833; }
 .message-form input {
   flex: 1; padding: 10px 14px; border-radius: 20px; border: 1px solid #2a3140; background: #10141c; color: #e6e8eb;
