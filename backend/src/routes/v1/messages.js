@@ -1,16 +1,10 @@
 const express = require('express');
-const { v4: uuidv4 } = require('uuid');
 const repo = require('../../db');
-const { nowIso } = require('../../utils/time');
 const { requireAuth, requirePermission } = require('../../middleware/authGuards');
-const { ok, created, fail } = require('../../utils/respond');
+const { ok, fail } = require('../../utils/respond');
+const chat = require('../../services/chatDeliveryService');
 
 const router = express.Router();
-
-async function conversationForUser(conv, uid) {
-  if (conv.type === 'DIRECT') return conv.userAId === uid || conv.userBId === uid;
-  return !!(await repo.findOne('groupMembers', { groupId: conv.groupId, userId: uid }));
-}
 
 function publicSender(u) {
   if (!u) return null;
@@ -23,7 +17,7 @@ router.get('/conversations', requireAuth, requirePermission('chat.view'), async 
   const all = await repo.list('conversations');
   const candidates = all.filter((c) => c.orgId === req.user.orgId || c.crossOrgLinkId);
   const mine = [];
-  for (const c of candidates) if (await conversationForUser(c, req.user.uid)) mine.push(c);
+  for (const c of candidates) if (await chat.conversationForUser(c, req.user.uid)) mine.push(c);
 
   const enriched = [];
   for (const c of mine) {
@@ -40,7 +34,12 @@ router.get('/conversations', requireAuth, requirePermission('chat.view'), async 
     }
     const msgs = await repo.list('messages', { conversationId: c.id });
     const lastMessage = msgs.length ? msgs.reduce((a, b) => (new Date(a.createdAt) > new Date(b.createdAt) ? a : b)) : null;
-    enriched.push({ ...c, title, avatarUrl, lastMessage });
+
+    // Unread count: messages not sent by me whose delivery row for me isn't READ yet.
+    const myDeliveries = await repo.list('messageDeliveries', { conversationId: c.id, userId: req.user.uid });
+    const unreadCount = myDeliveries.filter((d) => d.status !== 'READ').length;
+
+    enriched.push({ ...c, title, avatarUrl, lastMessage, unreadCount });
   }
 
   enriched.sort((a, b) => new Date(b.lastMessageAt || b.createdAt) - new Date(a.lastMessageAt || a.createdAt));
@@ -61,18 +60,20 @@ router.post('/conversations/direct', requireAuth, requirePermission('chat.send')
     (c.userAId === req.user.uid && c.userBId === userId) || (c.userAId === userId && c.userBId === req.user.uid));
   if (existing) return ok(res, existing);
 
+  const { v4: uuidv4 } = require('uuid');
+  const { nowIso } = require('../../utils/time');
   const conversation = await repo.insert('conversations', {
     id: uuidv4(), orgId: req.user.orgId, type: 'DIRECT', groupId: null,
     userAId: req.user.uid, userBId: userId, crossOrgLinkId: null, lastMessageAt: null, createdAt: nowIso(),
   });
-  created(res, conversation);
+  res.status(201).json({ data: conversation });
 });
 
 // GET /api/v1/conversations/:id/messages?before=&limit=
 router.get('/conversations/:id/messages', requireAuth, requirePermission('chat.view'), async (req, res) => {
   const conv = await repo.findById('conversations', req.params.id);
   if (!conv) return fail(res, 404, 'Conversation not found');
-  if (!(await conversationForUser(conv, req.user.uid))) return fail(res, 403, 'Not a member of this conversation');
+  if (!(await chat.conversationForUser(conv, req.user.uid))) return fail(res, 403, 'Not a member of this conversation');
 
   const limit = Math.min(parseInt(req.query.limit) || 50, 100);
   let msgs = (await repo.list('messages', { conversationId: conv.id })).filter((m) => !m.deleted);
@@ -80,15 +81,33 @@ router.get('/conversations/:id/messages', requireAuth, requirePermission('chat.v
   msgs = msgs.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).slice(0, limit);
 
   const withSenders = [];
-  for (const m of msgs.reverse()) withSenders.push({ ...m, sender: publicSender(await repo.findById('users', m.senderId)) });
+  for (const m of msgs.reverse()) {
+    const deliveries = await repo.list('messageDeliveries', { messageId: m.id });
+    withSenders.push({ ...m, sender: publicSender(await repo.findById('users', m.senderId)), deliveries });
+    // Viewing the conversation implicitly marks messages from others as delivered to me.
+    if (m.senderId !== req.user.uid) await chat.markDelivered(m.id, req.user.uid);
+  }
   ok(res, withSenders);
+});
+
+// GET /api/v1/conversations/:id/sync?since=ISO_TIMESTAMP
+// REST fallback for reconnection catch-up (mirrors the socket 'chat:sync_request'
+// event) — useful for a client that reconnects to a fresh page load rather than
+// a live socket, or as a periodic safety-net poll independent of the socket.
+router.get('/conversations/:id/sync', requireAuth, requirePermission('chat.view'), async (req, res) => {
+  try {
+    const messages = await chat.syncSince(req.params.id, req.user.uid, req.query.since || null);
+    ok(res, messages);
+  } catch (err) {
+    fail(res, err.status || 500, err.message || 'Sync failed');
+  }
 });
 
 // GET /api/v1/conversations/:id/search?q=
 router.get('/conversations/:id/search', requireAuth, requirePermission('chat.view'), async (req, res) => {
   const conv = await repo.findById('conversations', req.params.id);
   if (!conv) return fail(res, 404, 'Conversation not found');
-  if (!(await conversationForUser(conv, req.user.uid))) return fail(res, 403, 'Not a member of this conversation');
+  if (!(await chat.conversationForUser(conv, req.user.uid))) return fail(res, 403, 'Not a member of this conversation');
 
   const q = (req.query.q || '').toLowerCase();
   const msgs = (await repo.list('messages', { conversationId: conv.id })).filter((m) => !m.deleted && m.content.toLowerCase().includes(q));
